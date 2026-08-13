@@ -1,0 +1,2199 @@
+From 682e66e2a64c3ebe74da5ecd0e4d9dda24fa8876 Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.com>
+Date: Thu, 13 Aug 2026 14:18:58 +0000
+Subject: [PATCH] Overhaul auth: single top-level login + section/sub-section
+ permissions
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- New portal_auth.py: shared users/permissions DB used by both the portal
+  shell and the mounted Training Tracker app (same session cookie via a
+  shared Flask secret key, so logging in once authenticates both).
+- Portal app.py: /login, /logout, before_request login gate on every route,
+  a route->section map so each Invoice Generator client's API is blocked
+  without the matching permission, and a new /admin/permissions screen
+  (superadmin-only) to create users and grant section/sub-section access,
+  plus Training Tracker's admin/editor/viewer role.
+- templates/index.html + static/js/app.js: sidebar nav (top-level tabs and
+  Invoice Generator's per-client sub-nav) now only renders what the logged
+  -in user has access to; added logged-in-as/logout + Users & Permissions
+  link; added an empty state for a user with no access at all.
+- Training Tracker: removed its own login/users table entirely (delegates
+  to portal_auth for both authentication and its admin/editor/viewer role);
+  removed local /admin/users/* routes and admin.html's Users section in
+  favor of the portal-level screen; removed the online sign-off feature
+  (signoff_sheet/submit_signature routes, sign.html, the 'Open sign-off'
+  button) per request — the manager's physical-sheet upload/download flow
+  is unchanged. Added a migration for existing installs to safely drop the
+  old local users table and the FK on signoff_uploads.uploaded_by.
+---
+ .gitignore                                  |  13 +-
+ app.py                                      | 280 +++++++++++++-
+ portal_auth.py                              | 352 +++++++++++++++++
+ static/js/app.js                            |   7 +-
+ templates/admin_permissions.html            | 147 +++++++
+ templates/index.html                        |  75 +++-
+ templates/login.html                        | 121 ++++++
+ training_tracker/app.py                     | 401 +++++++-------------
+ training_tracker/templates/account.html     |  21 +-
+ training_tracker/templates/admin.html       | 105 +----
+ training_tracker/templates/base.html        |  17 +-
+ training_tracker/templates/login.html       |  27 --
+ training_tracker/templates/sign.html        | 144 -------
+ training_tracker/templates/week_detail.html |   6 +-
+ 14 files changed, 1111 insertions(+), 605 deletions(-)
+ create mode 100644 portal_auth.py
+ create mode 100644 templates/admin_permissions.html
+ create mode 100644 templates/login.html
+ delete mode 100644 training_tracker/templates/login.html
+ delete mode 100644 training_tracker/templates/sign.html
+
+diff --git a/.gitignore b/.gitignore
+index 658238b..b51b985 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -1,9 +1,14 @@
+-# Auto-generated Flask session-cookie signing key (see app.py SESSION_SECRET_FILE).
+-# Anyone with this file can forge session cookies for this app instance —
+-# never commit it or ship it in a handoff zip. The app creates a fresh one
+-# automatically on first run if it's missing.
++# Auto-generated Flask session-cookie signing key, shared by the portal app
++# and the mounted Training Tracker app (see portal_auth.py). Anyone with this
++# file can forge session cookies for every app instance — never commit it or
++# ship it in a handoff zip. Created automatically on first run if missing.
+ .flask_secret
+ 
++# Shared users/permissions database (see portal_auth.py) — runtime data,
++# not source. Created automatically (with a seeded admin/admin superadmin)
++# on first run.
++portal_auth.db
++
+ # Runtime data — user uploads, generated invoices, editable pricing/config
+ # that shouldn't be baked into version control.
+ /uploads/*
+diff --git a/app.py b/app.py
+index bb41138..4ac2f6a 100644
+--- a/app.py
++++ b/app.py
+@@ -7,8 +7,11 @@ from pathlib import Path
+ from datetime import datetime
+ 
+ import pandas as pd
+-from flask import Flask, render_template, request, jsonify, Response, send_file, session as flask_session
++from flask import Flask, render_template, request, jsonify, Response, send_file, session as flask_session, redirect, url_for, flash
+ from werkzeug.middleware.dispatcher import DispatcherMiddleware
++from werkzeug.security import check_password_hash
++
++import portal_auth
+ 
+ app = Flask(__name__)
+ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+@@ -56,18 +59,235 @@ app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {
+ # with an ephemeral filesystem (Render's free tier, etc.) this file doesn't
+ # survive a restart/redeploy either — set a FLASK_SECRET_KEY environment
+ # variable there instead and it's preferred over the file automatically.
+-SESSION_SECRET_FILE = Path(__file__).parent / ".flask_secret"
+-_env_secret = os.environ.get("FLASK_SECRET_KEY")
+-if _env_secret:
+-    app.secret_key = _env_secret
+-elif SESSION_SECRET_FILE.exists():
+-    app.secret_key = SESSION_SECRET_FILE.read_bytes()
+-else:
+-    app.secret_key = os.urandom(32)
+-    try:
+-        SESSION_SECRET_FILE.write_bytes(app.secret_key)
+-    except OSError:
+-        pass  # read-only filesystem — fine, this process's secret just won't persist
++# Shared with training_tracker/app.py (see portal_auth.py docstring) so a
++# session started at the top-level /login is readable by the mounted
++# Training Tracker app too — one login, one session cookie, both apps.
++app.secret_key = portal_auth.load_or_create_secret()
++
++portal_auth.init_db()
++app.teardown_appcontext(portal_auth.close_db)
++
++
++# ── Portal-wide login gate ──────────────────────────────────────────────────
++# Every route requires a logged-in user except the handful below. Section-
++# level access (which nav items / API routes a user may reach) is enforced
++# per-route via ROUTE_SECTIONS + the before_request hook further down, so a
++# direct link to a page/API a user isn't permissioned for 404s/redirects
++# instead of rendering.
++PUBLIC_ENDPOINTS = {"login", "healthz", "version", "static"}
++
++# Maps each route's endpoint (view function name) to the (section, subsection)
++# it belongs to, per portal_auth.SECTIONS. "index" and anything not listed
++# just requires being logged in (no specific section) — index.html does its
++# own conditional rendering of nav items based on the user's permissions.
++ROUTE_SECTIONS = {
++    # Promethean — Workshop Invoice
++    "sanitize_route": ("invoice-generator", "promethean"),
++    "generate": ("invoice-generator", "promethean"),
++    "stream": ("invoice-generator", "promethean"),
++    "download": ("invoice-generator", "promethean"),
++    # Promethean — Storage Invoice
++    "analyze_storage_route": ("invoice-generator", "promethean"),
++    "confirm_storage": ("invoice-generator", "promethean"),
++    "stream_storage": ("invoice-generator", "promethean"),
++    "get_storage_prices": ("invoice-generator", "promethean"),
++    "set_storage_prices": ("invoice-generator", "promethean"),
++    # Promethean — FedEx Shipment Upload
++    "analyze_fedex_shipment_route": ("invoice-generator", "promethean"),
++    "build_fedex_shipment": ("invoice-generator", "promethean"),
++    "stream_fedex_shipment": ("invoice-generator", "promethean"),
++    "get_fedex_shipment_defaults": ("invoice-generator", "promethean"),
++    "set_fedex_shipment_defaults": ("invoice-generator", "promethean"),
++    # Philips
++    "analyze_philips_route": ("invoice-generator", "philips"),
++    "confirm_philips": ("invoice-generator", "philips"),
++    "stream_philips": ("invoice-generator", "philips"),
++    "generate_report_and_analyze": ("invoice-generator", "philips"),
++    "get_philips_dimensions": ("invoice-generator", "philips"),
++    "upload_philips_dimensions": ("invoice-generator", "philips"),
++    "download_philips_dimensions": ("invoice-generator", "philips"),
++    "get_philips_repair_cost": ("invoice-generator", "philips"),
++    "set_philips_repair_cost": ("invoice-generator", "philips"),
++    # TCL
++    "analyze_tcl_route": ("invoice-generator", "tcl"),
++    "confirm_tcl": ("invoice-generator", "tcl"),
++    "stream_tcl": ("invoice-generator", "tcl"),
++    # AMC
++    "analyze_amc_route": ("invoice-generator", "amc"),
++    "confirm_amc": ("invoice-generator", "amc"),
++    "stream_amc": ("invoice-generator", "amc"),
++    "get_amc_dimensions": ("invoice-generator", "amc"),
++    "upload_amc_dimensions": ("invoice-generator", "amc"),
++    "download_amc_dimensions": ("invoice-generator", "amc"),
++    "get_amc_prices": ("invoice-generator", "amc"),
++    "set_amc_prices": ("invoice-generator", "amc"),
++    # Config
++    "get_serial_rules": ("invoice-generator", "config"),
++    "save_serial_rules": ("invoice-generator", "config"),
++}
++
++
++@app.before_request
++def _enforce_login_and_permissions():
++    endpoint = request.endpoint
++    if endpoint is None or endpoint in PUBLIC_ENDPOINTS:
++        return None
++    user = portal_auth.get_current_user()
++    if not user:
++        return redirect(url_for("login", next=request.path))
++    section = ROUTE_SECTIONS.get(endpoint)
++    if section and not portal_auth.has_access(user, section[0], section[1]):
++        flash("You don't have permission to view that.", "error")
++        return redirect(url_for("index"))
++    return None
++
++
++@app.route("/login", methods=["GET", "POST"])
++def login():
++    if request.method == "POST":
++        username = request.form.get("username", "").strip()
++        password = request.form.get("password", "")
++        db = portal_auth.get_db()
++        row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
++        if row and check_password_hash(row["password_hash"], password):
++            flask_session.clear()
++            flask_session["user_id"] = row["id"]
++            flask_session.permanent = True
++            next_url = request.form.get("next") or request.args.get("next") or url_for("index")
++            return redirect(next_url)
++        flash("Incorrect username or password.", "error")
++    next_url = request.args.get("next", "")
++    return render_template("login.html", next_url=next_url)
++
++
++@app.route("/logout", methods=["POST"])
++def logout():
++    flask_session.clear()
++    flash("Signed out.", "success")
++    return redirect(url_for("login"))
++
++
++@app.route("/admin/permissions")
++def admin_permissions():
++    user = portal_auth.get_current_user()
++    if not user or not user["is_superadmin"]:
++        flash("You don't have permission to view that.", "error")
++        return redirect(url_for("index"))
++    users = portal_auth.list_users()
++    perms_by_user = {}
++    for u in users:
++        raw = portal_auth.get_user_permissions(u["id"])  # {(section, subsection): role_or_'access'}
++        shaped = {}
++        for section, meta in portal_auth.SECTIONS.items():
++            if meta.get("children"):
++                whole = (section, None) in raw
++                children = {c for (s, sub) in raw if s == section and sub is not None for c in [sub]}
++                shaped[section] = {"whole": whole, "children": children}
++            elif meta.get("roles"):
++                shaped[section] = raw.get((section, None))  # role string or None
++            else:
++                shaped[section] = (section, None) in raw
++        perms_by_user[u["id"]] = shaped
++    return render_template(
++        "admin_permissions.html",
++        users=users,
++        perms_by_user=perms_by_user,
++        sections=portal_auth.SECTIONS,
++    )
++
++
++@app.route("/admin/permissions/users/new", methods=["POST"])
++def admin_permissions_new_user():
++    user = portal_auth.get_current_user()
++    if not user or not user["is_superadmin"]:
++        flash("You don't have permission to do that.", "error")
++        return redirect(url_for("index"))
++    username = request.form.get("username", "").strip()
++    password = request.form.get("password", "")
++    is_superadmin = request.form.get("is_superadmin") == "on"
++    if not username or not password:
++        flash("Username and password are required.", "error")
++    else:
++        try:
++            portal_auth.create_user(username, password, is_superadmin)
++            flash(f"Created user {username}.", "success")
++        except Exception:
++            flash("That username is already taken.", "error")
++    return redirect(url_for("admin_permissions"))
++
++
++@app.route("/admin/permissions/users/<int:user_id>/delete", methods=["POST"])
++def admin_permissions_delete_user(user_id):
++    user = portal_auth.get_current_user()
++    if not user or not user["is_superadmin"]:
++        flash("You don't have permission to do that.", "error")
++        return redirect(url_for("index"))
++    if user_id == user["id"]:
++        flash("You can't delete your own account while logged in as it.", "error")
++        return redirect(url_for("admin_permissions"))
++    portal_auth.delete_user(user_id)
++    flash("User deleted.", "success")
++    return redirect(url_for("admin_permissions"))
++
++
++@app.route("/admin/permissions/users/<int:user_id>/password", methods=["POST"])
++def admin_permissions_reset_password(user_id):
++    user = portal_auth.get_current_user()
++    if not user or not user["is_superadmin"]:
++        flash("You don't have permission to do that.", "error")
++        return redirect(url_for("index"))
++    password = request.form.get("password", "")
++    if len(password) < 4:
++        flash("Password must be at least 4 characters.", "error")
++    else:
++        portal_auth.update_user(user_id, password=password)
++        flash("Password updated.", "success")
++    return redirect(url_for("admin_permissions"))
++
++
++@app.route("/admin/permissions/users/<int:user_id>/set", methods=["POST"])
++def admin_permissions_set(user_id):
++    user = portal_auth.get_current_user()
++    if not user or not user["is_superadmin"]:
++        flash("You don't have permission to do that.", "error")
++        return redirect(url_for("index"))
++
++    # Top-level sections without children: checkbox "on"/absent.
++    for section, meta in portal_auth.SECTIONS.items():
++        if meta.get("children"):
++            continue
++        if meta.get("roles"):
++            role = request.form.get(f"role__{section}", "")
++            if role in meta["roles"]:
++                portal_auth.set_permission(user_id, section, None, role)
++            else:
++                portal_auth.clear_permission(user_id, section, None)
++        else:
++            if request.form.get(f"access__{section}") == "on":
++                portal_auth.set_permission(user_id, section, None, "access")
++            else:
++                portal_auth.clear_permission(user_id, section, None)
++
++    # Sections with children: either "whole section" or a set of specific
++    # children.
++    for section, meta in portal_auth.SECTIONS.items():
++        children = meta.get("children")
++        if not children:
++            continue
++        if request.form.get(f"access__{section}") == "on":
++            portal_auth.set_permission(user_id, section, None, "access")
++            for child in children:
++                portal_auth.clear_permission(user_id, section, child)
++        else:
++            portal_auth.clear_permission(user_id, section, None)
++            for child in children:
++                if request.form.get(f"access__{section}__{child}") == "on":
++                    portal_auth.set_permission(user_id, section, child, "access")
++                else:
++                    portal_auth.clear_permission(user_id, section, child)
++
++    flash("Permissions updated.", "success")
++    return redirect(url_for("admin_permissions"))
+ 
+ 
+ def _sid() -> str:
+@@ -494,7 +714,39 @@ def healthz():
+ 
+ @app.route("/")
+ def index():
+-    return render_template("index.html")
++    user = portal_auth.get_current_user()
++    ig_children = set(portal_auth.accessible_children(user, "invoice-generator"))
++    can_ig = bool(ig_children)
++    can_sms = portal_auth.has_access(user, "sms-nonconforming")
++    can_tbd2 = portal_auth.has_access(user, "tbd2")
++    tt_role = portal_auth.get_role(user, "training-tracker")
++    can_tt = tt_role is not None
++
++    default_portal = None
++    for p, ok in (("invoice-generator", can_ig), ("sms-nonconforming", can_sms), ("tbd2", can_tbd2)):
++        if ok:
++            default_portal = p
++            break
++
++    default_client = None
++    if can_ig:
++        for c in ("promethean", "amc", "tcl", "philips", "config"):
++            if c in ig_children:
++                default_client = c
++                break
++
++    return render_template(
++        "index.html",
++        auth_user=user,
++        can_invoice_generator=can_ig,
++        ig_children=ig_children,
++        can_sms_nonconforming=can_sms,
++        can_tbd2=can_tbd2,
++        can_training_tracker=can_tt,
++        default_portal=default_portal,
++        default_client=default_client,
++        has_any_access=bool(default_portal or can_tt),
++    )
+ 
+ 
+ # ── SANITIZE: validate raw production file ────────────────────────────────────
+diff --git a/portal_auth.py b/portal_auth.py
+new file mode 100644
+index 0000000..ecab056
+--- /dev/null
++++ b/portal_auth.py
+@@ -0,0 +1,352 @@
++"""
++Shared authentication & permissions for the Logicore Portal.
++
++One login gate, one users table, one permissions table — used by the portal
++shell (app.py) AND by Training Tracker (training_tracker/app.py), which used
++to have its own separate login/users table. Training Tracker no longer
++authenticates anyone itself; it trusts the portal session and asks this
++module "does this user have a Training Tracker role?" instead.
++
++Sharing works because both are separate Flask() apps mounted in the same
++process via DispatcherMiddleware, but Flask sessions are just signed cookies
++— as long as both apps use the identical `secret_key` (see SECRET_FILE
++below, read by both app.py and training_tracker/app.py) and the same session
++key names, a session started in one is readable by the other with zero
++extra plumbing.
++"""
++import sqlite3
++from pathlib import Path
++from functools import wraps
++
++from flask import session, redirect, url_for, request, g, flash
++from werkzeug.security import generate_password_hash, check_password_hash
++
++BASE_DIR = Path(__file__).parent
++DB_PATH = BASE_DIR / "portal_auth.db"
++
++# Shared secret so a session cookie set by the portal app is readable inside
++# the training_tracker app (and vice versa) — see module docstring.
++SECRET_FILE = BASE_DIR / ".flask_secret"
++
++
++def load_or_create_secret():
++    import os
++    env_secret = os.environ.get("FLASK_SECRET_KEY")
++    if env_secret:
++        return env_secret.encode() if isinstance(env_secret, str) else env_secret
++    if SECRET_FILE.exists():
++        return SECRET_FILE.read_bytes()
++    secret = os.urandom(32)
++    try:
++        SECRET_FILE.write_bytes(secret)
++    except OSError:
++        pass
++    return secret
++
++
++# ---------------------------------------------------------------------------
++# Section registry — the single source of truth for what can be permissioned
++# and shown in the admin "Users & Permissions" screen. Every top-level nav
++# item is a "section". Sections with "children" can be granted either as a
++# whole (subsection=NULL) or narrowed to specific children (e.g. just AMC).
++# Sections with "roles" (only Training Tracker today) support admin/editor/
++# viewer instead of a flat yes/no.
++# ---------------------------------------------------------------------------
++SECTIONS = {
++    "invoice-generator": {
++        "label": "Invoice Generator",
++        "children": {
++            "promethean": "Promethean",
++            "amc": "AMC",
++            "tcl": "TCL",
++            "philips": "Philips",
++            "config": "Config",
++        },
++    },
++    "sms-nonconforming": {"label": "SMS NonConforming"},
++    "training-tracker": {"label": "Training Tracker", "roles": ["admin", "editor", "viewer"]},
++    "tbd2": {"label": "TBD 2"},
++}
++
++TRAINING_TRACKER_ROLES = ("admin", "editor", "viewer")
++
++
++# ---------------------------------------------------------------------------
++# DB
++# ---------------------------------------------------------------------------
++
++def get_db():
++    """Per-request connection, cached on flask.g. Safe to call from either
++    app since each has its own request/app context."""
++    if "_auth_db" not in g:
++        db = sqlite3.connect(DB_PATH)
++        db.row_factory = sqlite3.Row
++        db.execute("PRAGMA foreign_keys = ON")
++        g._auth_db = db
++    return g._auth_db
++
++
++def close_db(exception=None):
++    db = g.pop("_auth_db", None)
++    if db is not None:
++        db.close()
++
++
++def init_db():
++    """Create tables and seed one super-admin (admin/admin) on first run.
++    Idempotent — safe to call on every startup of either app."""
++    db = sqlite3.connect(DB_PATH)
++    db.row_factory = sqlite3.Row
++    db.execute(
++        """
++        CREATE TABLE IF NOT EXISTS users (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            username TEXT UNIQUE NOT NULL,
++            password_hash TEXT NOT NULL,
++            is_superadmin INTEGER NOT NULL DEFAULT 0,
++            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++        )
++        """
++    )
++    db.execute(
++        """
++        CREATE TABLE IF NOT EXISTS permissions (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
++            section TEXT NOT NULL,
++            subsection TEXT,
++            role TEXT,
++            UNIQUE(user_id, section, subsection)
++        )
++        """
++    )
++    db.commit()
++    # BEGIN IMMEDIATE + COUNT-check guards against a duplicate-insert race if
++    # two workers boot at once (same pattern training_tracker's init_db used
++    # for its own default admin, before that table existed here).
++    db.execute("BEGIN IMMEDIATE")
++    try:
++        existing = db.execute("SELECT COUNT(*) c FROM users").fetchone()[0]
++        if existing == 0:
++            cur = db.execute(
++                "INSERT INTO users (username, password_hash, is_superadmin) VALUES (?, ?, 1)",
++                ("admin", generate_password_hash("admin")),
++            )
++            db.commit()
++        db.commit()
++    except Exception:
++        db.rollback()
++        raise
++    db.close()
++
++
++# ---------------------------------------------------------------------------
++# Current user / login gate
++# ---------------------------------------------------------------------------
++
++def get_current_user():
++    if "_auth_user" in g:
++        return g._auth_user
++    user_id = session.get("user_id")
++    if not user_id:
++        g._auth_user = None
++        return None
++    db = get_db()
++    row = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
++    if row is None:
++        session.clear()
++        g._auth_user = None
++        return None
++    g._auth_user = dict(row)
++    return g._auth_user
++
++
++def using_default_admin_password(user):
++    return bool(
++        user
++        and user["username"] == "admin"
++        and check_password_hash(user["password_hash"], "admin")
++    )
++
++
++def login_required(view):
++    @wraps(view)
++    def wrapped(*args, **kwargs):
++        if not get_current_user():
++            return redirect(url_for("login", next=request.path))
++        return view(*args, **kwargs)
++    return wrapped
++
++
++# ---------------------------------------------------------------------------
++# Permission lookups
++# ---------------------------------------------------------------------------
++
++def _permission_rows(user_id):
++    db = get_db()
++    return db.execute("SELECT * FROM permissions WHERE user_id = ?", (user_id,)).fetchall()
++
++
++def has_access(user, section, subsection=None):
++    """Does `user` have access to `section` (optionally narrowed to a
++    specific `subsection`, e.g. 'promethean' within 'invoice-generator')?"""
++    if not user:
++        return False
++    if user.get("is_superadmin"):
++        return True
++    db = get_db()
++    # A row with subsection IS NULL grants the whole section (all children).
++    whole = db.execute(
++        "SELECT 1 FROM permissions WHERE user_id = ? AND section = ? AND subsection IS NULL",
++        (user["id"], section),
++    ).fetchone()
++    if whole:
++        return True
++    if subsection:
++        specific = db.execute(
++            "SELECT 1 FROM permissions WHERE user_id = ? AND section = ? AND subsection = ?",
++            (user["id"], section, subsection),
++        ).fetchone()
++        return bool(specific)
++    return False
++
++
++def get_role(user, section):
++    """For role-based sections (Training Tracker): the user's role, or None
++    if they have no access to that section at all. Superadmins are treated
++    as 'admin' for role-based sections."""
++    if not user:
++        return None
++    if user.get("is_superadmin"):
++        return "admin"
++    db = get_db()
++    row = db.execute(
++        "SELECT role FROM permissions WHERE user_id = ? AND section = ? AND subsection IS NULL",
++        (user["id"], section),
++    ).fetchone()
++    return row["role"] if row else None
++
++
++def accessible_children(user, section):
++    """Which children of `section` this user can see — used to decide which
++    sidebar sub-items / client tabs to render. Empty list + no whole-section
++    grant means none."""
++    children = SECTIONS.get(section, {}).get("children", {})
++    if not children:
++        return []
++    if has_access(user, section):  # whole-section grant (or superadmin)
++        return list(children.keys())
++    db = get_db()
++    rows = db.execute(
++        "SELECT subsection FROM permissions WHERE user_id = ? AND section = ? AND subsection IS NOT NULL",
++        (user["id"], section),
++    ).fetchall()
++    return [r["subsection"] for r in rows]
++
++
++def section_required(section, subsection=None):
++    """Route decorator for the portal app. Training Tracker uses
++    role_required() below instead, since its access model is role-based."""
++    def decorator(view):
++        @wraps(view)
++        def wrapped(*args, **kwargs):
++            user = get_current_user()
++            if not user:
++                return redirect(url_for("login", next=request.path))
++            if not has_access(user, section, subsection):
++                flash("You don't have permission to view that.", "error")
++                return redirect(url_for("index"))
++            return view(*args, **kwargs)
++        return wrapped
++    return decorator
++
++
++def role_required(section, *roles):
++    """Route decorator for Training Tracker. Requires the user's role for
++    `section` (normally 'training-tracker') to be one of `roles`."""
++    def decorator(view):
++        @wraps(view)
++        def wrapped(*args, **kwargs):
++            user = get_current_user()
++            if not user:
++                script_name = request.environ.get("SCRIPT_NAME", "")
++                return redirect(f"/login?next={script_name}{request.path}")
++            role = get_role(user, section)
++            if role not in roles:
++                flash("You don't have permission to do that.", "error")
++                return redirect(request.environ.get("SCRIPT_NAME", "") + "/")
++            return view(*args, **kwargs)
++        return wrapped
++    return decorator
++
++
++# ---------------------------------------------------------------------------
++# Admin (superadmin-only) helpers for the Users & Permissions screen
++# ---------------------------------------------------------------------------
++
++def list_users():
++    db = get_db()
++    return db.execute("SELECT * FROM users ORDER BY username ASC").fetchall()
++
++
++def get_user_permissions(user_id):
++    """Returns {(section, subsection_or_None): role_or_'access'}"""
++    db = get_db()
++    rows = db.execute("SELECT * FROM permissions WHERE user_id = ?", (user_id,)).fetchall()
++    return {(r["section"], r["subsection"]): (r["role"] or "access") for r in rows}
++
++
++def set_permission(user_id, section, subsection, role):
++    """role='access' for flat sections, or one of TRAINING_TRACKER_ROLES."""
++    db = get_db()
++    db.execute(
++        "INSERT INTO permissions (user_id, section, subsection, role) VALUES (?, ?, ?, ?) "
++        "ON CONFLICT(user_id, section, subsection) DO UPDATE SET role = excluded.role",
++        (user_id, section, subsection, None if role == "access" else role),
++    )
++    db.commit()
++
++
++def clear_permission(user_id, section, subsection=None):
++    db = get_db()
++    if subsection is None:
++        db.execute(
++            "DELETE FROM permissions WHERE user_id = ? AND section = ? AND subsection IS NULL",
++            (user_id, section),
++        )
++    else:
++        db.execute(
++            "DELETE FROM permissions WHERE user_id = ? AND section = ? AND subsection = ?",
++            (user_id, section, subsection),
++        )
++    db.commit()
++
++
++def create_user(username, password, is_superadmin=False):
++    db = get_db()
++    db.execute(
++        "INSERT INTO users (username, password_hash, is_superadmin) VALUES (?, ?, ?)",
++        (username, generate_password_hash(password), 1 if is_superadmin else 0),
++    )
++    db.commit()
++
++
++def delete_user(user_id):
++    db = get_db()
++    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
++    db.commit()
++
++
++def update_user(user_id, password=None, is_superadmin=None):
++    db = get_db()
++    if password:
++        db.execute(
++            "UPDATE users SET password_hash = ? WHERE id = ?",
++            (generate_password_hash(password), user_id),
++        )
++    if is_superadmin is not None:
++        db.execute(
++            "UPDATE users SET is_superadmin = ? WHERE id = ?",
++            (1 if is_superadmin else 0, user_id),
++        )
++    db.commit()
+diff --git a/static/js/app.js b/static/js/app.js
+index 458a1a6..d242dd1 100644
+--- a/static/js/app.js
++++ b/static/js/app.js
+@@ -1707,7 +1707,12 @@ document.addEventListener('keydown', e => { if(e.key==='Escape') hideAbout(); })
+     if (requestedPortal && document.getElementById('portal-content-' + requestedPortal)) {
+       showPortalPage(requestedPortal);
+     } else {
+-      setCrumb('Promethean', 'Workshop Invoice');
++      // Root/leaf text is already server-rendered correctly for whichever
++      // section the logged-in user actually has access to (see index() in
++      // app.py) — just re-run it through setCrumb for sep/leaf visibility,
++      // rather than hardcoding 'Promethean'/'Workshop Invoice'.
++      const rootEl = document.getElementById('crumb-root');
++      if (rootEl) setCrumb(rootEl.textContent.trim(), rootEl.dataset.defaultLeaf || null);
+     }
+   });
+ })();
+diff --git a/templates/admin_permissions.html b/templates/admin_permissions.html
+new file mode 100644
+index 0000000..951d15a
+--- /dev/null
++++ b/templates/admin_permissions.html
+@@ -0,0 +1,147 @@
++<!DOCTYPE html>
++<html lang="en" data-theme="dark">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>Users &amp; Permissions — Logicore Portal</title>
++  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
++  <link rel="stylesheet" href="/static/css/app.css" />
++  <style>
++    body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
++    .wrap { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
++    .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2rem; }
++    .topbar a { color: var(--text-muted); text-decoration: none; font-family: var(--font-mono); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
++    .topbar a:hover { color: var(--accent); }
++    h1 { font-family: var(--font-display); font-size: 1.6rem; margin: 0; }
++    h2 { font-family: var(--font-display); font-size: 1.1rem; margin: 0 0 1rem; }
++    .card { background: var(--bg-50); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; }
++    .flash { padding: 0.6rem 0.8rem; border-radius: var(--radius-sm); font-size: 0.85rem; margin-bottom: 1.25rem; }
++    .flash-error { background: rgba(239,68,68,.12); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
++    .flash-success { background: rgba(47,216,166,.12); color: var(--accent-glow); border: 1px solid rgba(47,216,166,.3); }
++    label { display: block; font-family: var(--font-mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.3rem; }
++    input[type="text"], input[type="password"], select {
++      width: 100%; box-sizing: border-box; padding: 0.5rem 0.65rem; background: var(--bg-input);
++      border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 0.85rem;
++    }
++    .row { display: flex; gap: 1rem; flex-wrap: wrap; }
++    .row > div { flex: 1; min-width: 150px; }
++    .btn { display: inline-block; padding: 0.5rem 1rem; background: var(--accent); color: #06110d; border: none;
++      border-radius: var(--radius-sm); font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem;
++      text-transform: uppercase; letter-spacing: 0.04em; cursor: pointer; }
++    .btn:hover { background: var(--accent-glow); }
++    .btn-danger { background: transparent; color: #f87171; border: 1px solid rgba(239,68,68,.4); }
++    .btn-danger:hover { background: rgba(239,68,68,.12); }
++    .btn-ghost { background: transparent; color: var(--text-sub); border: 1px solid var(--border); }
++    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
++    .user-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
++    .user-name { font-family: var(--font-display); font-size: 1.05rem; }
++    .badge { font-family: var(--font-mono); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em;
++      background: rgba(47,216,166,.12); color: var(--accent-glow); border: 1px solid rgba(47,216,166,.3);
++      border-radius: 999px; padding: 0.15rem 0.55rem; margin-left: 0.5rem; }
++    .section-block { border-top: 1px solid var(--border); padding-top: 0.9rem; margin-top: 0.9rem; }
++    .section-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.5rem; }
++    .children { display: flex; flex-wrap: wrap; gap: 0.9rem; margin-top: 0.5rem; padding-left: 1.4rem; }
++    .checkline { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
++    .checkline input { width: auto; }
++    .actions-row { display: flex; gap: 0.6rem; align-items: center; margin-top: 1rem; flex-wrap: wrap; }
++    .inline-form { display: inline-flex; gap: 0.5rem; align-items: center; }
++    .inline-form input[type="password"] { width: 160px; }
++  </style>
++</head>
++<body>
++  <div class="wrap">
++    <div class="topbar">
++      <h1>Users &amp; Permissions</h1>
++      <a href="{{ url_for('index') }}">&larr; Back to portal</a>
++    </div>
++
++    {% with messages = get_flashed_messages(with_categories=true) %}
++      {% for category, message in messages %}
++        <div class="flash {% if category == 'error' %}flash-error{% else %}flash-success{% endif %}">{{ message }}</div>
++      {% endfor %}
++    {% endwith %}
++
++    <div class="card">
++      <h2>Add user</h2>
++      <form method="POST" action="{{ url_for('admin_permissions_new_user') }}">
++        <div class="row">
++          <div>
++            <label>Username</label>
++            <input type="text" name="username" required>
++          </div>
++          <div>
++            <label>Password</label>
++            <input type="password" name="password" required>
++          </div>
++        </div>
++        <div class="checkline" style="margin-top:0.75rem;">
++          <input type="checkbox" id="new-superadmin" name="is_superadmin">
++          <label for="new-superadmin" style="margin:0;">Superadmin (full access to everything, incl. this page)</label>
++        </div>
++        <div class="actions-row">
++          <button type="submit" class="btn">Create user</button>
++        </div>
++      </form>
++    </div>
++
++    {% for u in users %}
++    <div class="card">
++      <div class="user-head">
++        <div class="user-name">{{ u.username }}{% if u.is_superadmin %}<span class="badge">Superadmin</span>{% endif %}</div>
++        <div class="actions-row" style="margin-top:0;">
++          <form class="inline-form" method="POST" action="{{ url_for('admin_permissions_reset_password', user_id=u.id) }}">
++            <input type="password" name="password" placeholder="New password">
++            <button type="submit" class="btn btn-ghost">Reset password</button>
++          </form>
++          <form method="POST" action="{{ url_for('admin_permissions_delete_user', user_id=u.id) }}" onsubmit="return confirm('Delete {{ u.username }}?');">
++            <button type="submit" class="btn btn-danger">Delete</button>
++          </form>
++        </div>
++      </div>
++
++      {% if u.is_superadmin %}
++      <p style="color: var(--text-muted); font-size: 0.85rem;">Superadmins automatically have access to every section — nothing to configure.</p>
++      {% else %}
++      <form method="POST" action="{{ url_for('admin_permissions_set', user_id=u.id) }}">
++        {% set perms = perms_by_user[u.id] %}
++        {% for section, meta in sections.items() %}
++        <div class="section-block">
++          {% if meta.children %}
++            <div class="checkline">
++              <input type="checkbox" id="ig-{{ u.id }}" name="access__{{ section }}" {% if perms[section].whole %}checked{% endif %}>
++              <label for="ig-{{ u.id }}" style="margin:0;" class="section-title">{{ meta.label }} — full access</label>
++            </div>
++            <div class="children">
++              {% for child_key, child_label in meta.children.items() %}
++              <div class="checkline">
++                <input type="checkbox" id="ig-{{ u.id }}-{{ child_key }}" name="access__{{ section }}__{{ child_key }}" {% if child_key in perms[section].children %}checked{% endif %}>
++                <label for="ig-{{ u.id }}-{{ child_key }}" style="margin:0;">{{ child_label }}</label>
++              </div>
++              {% endfor %}
++            </div>
++          {% elif meta.roles %}
++            <label class="section-title" style="text-transform:none;letter-spacing:normal;font-family:inherit;">{{ meta.label }}</label>
++            <select name="role__{{ section }}">
++              <option value="" {% if not perms[section] %}selected{% endif %}>No access</option>
++              {% for r in meta.roles %}
++              <option value="{{ r }}" {% if perms[section] == r %}selected{% endif %}>{{ r|capitalize }}</option>
++              {% endfor %}
++            </select>
++          {% else %}
++            <div class="checkline">
++              <input type="checkbox" id="flat-{{ u.id }}-{{ section }}" name="access__{{ section }}" {% if perms[section] %}checked{% endif %}>
++              <label for="flat-{{ u.id }}-{{ section }}" style="margin:0;" class="section-title">{{ meta.label }}</label>
++            </div>
++          {% endif %}
++        </div>
++        {% endfor %}
++        <div class="actions-row">
++          <button type="submit" class="btn">Save permissions</button>
++        </div>
++      </form>
++      {% endif %}
++    </div>
++    {% endfor %}
++  </div>
++</body>
++</html>
+diff --git a/templates/index.html b/templates/index.html
+index 6a915ce..5365bbb 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -36,60 +36,80 @@
+   <nav class="sidebar-nav">
+     <div class="sidebar-section-label">Portal</div>
+ 
+-    <button class="side-link active portal-nav-btn" data-portal="invoice-generator" id="portal-nav-invoice-generator" onclick="showPortalPage('invoice-generator')">
++    {% if can_invoice_generator %}
++    <button class="side-link portal-nav-btn {% if default_portal=='invoice-generator' %}active{% else %}text-steel{% endif %}" data-portal="invoice-generator" id="portal-nav-invoice-generator" onclick="showPortalPage('invoice-generator')">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+       <span>Invoice Generator</span>
+     </button>
++    {% endif %}
+ 
+-    <button class="side-link portal-nav-btn text-steel" data-portal="sms-nonconforming" id="portal-nav-sms-nonconforming" onclick="showPortalPage('sms-nonconforming')">
++    {% if can_sms_nonconforming %}
++    <button class="side-link portal-nav-btn {% if default_portal=='sms-nonconforming' %}active{% else %}text-steel{% endif %}" data-portal="sms-nonconforming" id="portal-nav-sms-nonconforming" onclick="showPortalPage('sms-nonconforming')">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.3 2.3 18a1.5 1.5 0 0 0 1.3 2.2h16.8a1.5 1.5 0 0 0 1.3-2.2l-8-14.7a1.5 1.5 0 0 0-2.6 0Z"/><path d="M12 9v4M12 17h.01"/></svg>
+       <span>SMS NonConforming</span>
+     </button>
++    {% endif %}
+ 
++    {% if can_training_tracker %}
+     <a class="side-link text-steel" href="/training-tracker/" id="portal-nav-training-tracker">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 3 8l9 4 9-4-9-4Z"/><path d="M7 10.5V16c0 1 2.2 2.5 5 2.5s5-1.5 5-2.5v-5.5"/><path d="M21 8v6"/></svg>
+       <span>Training Tracker</span>
+     </a>
++    {% endif %}
+ 
+-    <button class="side-link portal-nav-btn text-steel" data-portal="tbd2" id="portal-nav-tbd2" onclick="showPortalPage('tbd2')">
++    {% if can_tbd2 %}
++    <button class="side-link portal-nav-btn {% if default_portal=='tbd2' %}active{% else %}text-steel{% endif %}" data-portal="tbd2" id="portal-nav-tbd2" onclick="showPortalPage('tbd2')">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-2.5 2-2.5 3.5M12 17h.01"/></svg>
+       <span>TBD 2</span>
+     </button>
++    {% endif %}
+ 
+-    <div class="sidebar-sub-body" id="portal-body-invoice-generator">
++    {% if can_invoice_generator %}
++    <div class="sidebar-sub-body" id="portal-body-invoice-generator" {% if default_portal!='invoice-generator' %}style="display:none"{% endif %}>
+     <div class="sidebar-section-label">Clients</div>
+ 
+-    <button class="side-link active nav-btn" data-page="promethean" id="nav-promethean" onclick="showPage('promethean')">
++    {% if 'promethean' in ig_children %}
++    <button class="side-link nav-btn {% if default_client=='promethean' %}active{% else %}text-steel{% endif %}" data-page="promethean" id="nav-promethean" onclick="showPage('promethean')">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L4 17v3h3l5.3-5.3a4 4 0 0 0 5.4-5.4l-2.7 2.7-2-2 2.7-2.7Z"/></svg>
+       <span>Promethean</span>
+     </button>
+-    <div class="sidebar-sub" id="sidebar-sub-promethean">
++    <div class="sidebar-sub" id="sidebar-sub-promethean" {% if default_client!='promethean' %}style="display:none"{% endif %}>
+       <button class="side-sublink active" id="subnav-invoice" data-sub="invoice" onclick="showSubPage('invoice','promethean')">Workshop Invoice</button>
+       <button class="side-sublink" id="subnav-storage" data-sub="storage" onclick="showSubPage('storage','promethean')">Storage Invoice</button>
+       <button class="side-sublink" id="subnav-fedex-shipment" data-sub="fedex-shipment" onclick="showSubPage('fedex-shipment','promethean')">FedEx Shipment Upload</button>
+     </div>
++    {% endif %}
+ 
+-    <button class="side-link nav-btn text-steel" data-page="amc" id="nav-amc" onclick="showPage('amc')">
++    {% if 'amc' in ig_children %}
++    <button class="side-link nav-btn {% if default_client=='amc' %}active{% else %}text-steel{% endif %}" data-page="amc" id="nav-amc" onclick="showPage('amc')">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8l9 5 9-5Z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>
+       <span>AMC</span>
+     </button>
++    {% endif %}
+ 
+-    <button class="side-link nav-btn text-steel" data-page="tcl" id="nav-tcl" onclick="showPage('tcl')">
++    {% if 'tcl' in ig_children %}
++    <button class="side-link nav-btn {% if default_client=='tcl' %}active{% else %}text-steel{% endif %}" data-page="tcl" id="nav-tcl" onclick="showPage('tcl')">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="1.5"/><path d="M8 20h8M12 16v4"/></svg>
+       <span>TCL</span>
+     </button>
++    {% endif %}
+ 
+-    <button class="side-link nav-btn text-steel" data-page="philips" id="nav-philips" onclick="showPage('philips')">
++    {% if 'philips' in ig_children %}
++    <button class="side-link nav-btn {% if default_client=='philips' %}active{% else %}text-steel{% endif %}" data-page="philips" id="nav-philips" onclick="showPage('philips')">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="6" width="19" height="12" rx="1.5"/><path d="M8 21h8"/></svg>
+       <span>Philips</span>
+     </button>
++    {% endif %}
+ 
++    {% if 'config' in ig_children %}
+     <div class="sidebar-section-label">System</div>
+-    <button class="side-link nav-btn text-steel" data-page="config" id="nav-config" onclick="showPage('config')">
++    <button class="side-link nav-btn {% if default_client=='config' %}active{% else %}text-steel{% endif %}" data-page="config" id="nav-config" onclick="showPage('config')">
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h9M17 6h3M4 12h3M9 12h11M4 18h13M20 18h0"/><circle cx="15" cy="6" r="2"/><circle cx="7" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+       <span>Config</span>
+     </button>
++    {% endif %}
+     </div><!-- /portal-body-invoice-generator -->
++    {% endif %}
+   </nav>
+ 
+   <div class="sidebar-footer">
+@@ -107,20 +127,37 @@
+       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+     </button>
+     <span class="status-dot"></span>
+-    <span class="crumb-root" id="crumb-root">Promethean</span>
++    <span class="crumb-root" id="crumb-root" data-default-leaf="{{ 'Workshop Invoice' if default_client=='promethean' else '' }}">{{ default_client|capitalize if default_client else (default_portal or '') }}</span>
+     <span class="crumb-sep" id="crumb-sep">/</span>
+     <span class="crumb-leaf" id="crumb-leaf">Workshop Invoice</span>
++    <div class="ml-auto flex items-center gap-4 font-mono text-xs uppercase tracking-wide text-steel">
++      {% if auth_user and auth_user.is_superadmin %}
++      <a href="{{ url_for('admin_permissions') }}" class="hover:text-accent transition-colors">Users &amp; Permissions</a>
++      {% endif %}
++      {% if auth_user %}
++      <span>{{ auth_user.username }}</span>
++      <form method="POST" action="{{ url_for('logout') }}" class="inline">
++        <button type="submit" class="hover:text-accent transition-colors">Log out</button>
++      </form>
++      {% endif %}
++    </div>
+   </div>
+ 
+ <!-- ══════════════════════════════════════════════════════════
+      PORTAL TAB: INVOICE GENERATOR (existing app, unchanged below)
+ ══════════════════════════════════════════════════════════ -->
+-<div id="portal-content-invoice-generator" class="relative z-10">
++{% if not has_any_access %}
++<div class="relative z-10 max-w-3xl mx-auto px-6 py-24 text-center">
++  <h2 class="text-2xl font-display mb-3">No access yet</h2>
++  <p class="text-steel">Your account doesn't have any sections enabled. Ask an admin to grant you access under Users &amp; Permissions.</p>
++</div>
++{% endif %}
++<div id="portal-content-invoice-generator" class="relative z-10{% if default_portal!='invoice-generator' %} hidden{% endif %}">
+ 
+ <!-- ══════════════════════════════════════════════════════════
+      SECTION: PROMETHEAN
+ ══════════════════════════════════════════════════════════ -->
+-<div id="page-promethean" class="relative z-10">
++<div id="page-promethean" class="relative z-10{% if default_client!='promethean' %} hidden{% endif %}">
+ 
+ <!-- ══════════════════════════════════════════════════════════
+      PAGE: INVOICE
+@@ -720,7 +757,7 @@
+ <!-- ══════════════════════════════════════════════════════════
+      PAGE: SERIAL CONFIG
+ ══════════════════════════════════════════════════════════ -->
+-<div id="page-config" class="hidden relative z-10 max-w-5xl mx-auto px-6 py-10 page-content">
++<div id="page-config" class="relative z-10 max-w-5xl mx-auto px-6 py-10 page-content{% if default_client!='config' %} hidden{% endif %}">
+   <div class="mb-8">
+     <h1 class="text-2xl font-semibold text-slate-100 tracking-tight">Serial Number Configuration</h1>
+     <p class="text-steel mt-1 text-sm">Define how serial number prefixes map to model names and screen sizes. The program uses these rules to auto-classify every unit.</p>
+@@ -906,7 +943,7 @@
+ <!-- ══════════════════════════════════════════════════════════
+      SECTION: AMC
+ ══════════════════════════════════════════════════════════ -->
+-<div id="page-amc" class="hidden relative z-10 max-w-5xl mx-auto px-6 py-10 page-content">
++<div id="page-amc" class="relative z-10 max-w-5xl mx-auto px-6 py-10 page-content{% if default_client!='amc' %} hidden{% endif %}">
+ 
+   <!-- ── STEP 1: Upload ─────────────────────────────────────────────────── -->
+   <div id="a-step-upload">
+@@ -1053,7 +1090,7 @@
+ <!-- ══════════════════════════════════════════════════════════
+      SECTION: TCL
+ ══════════════════════════════════════════════════════════ -->
+-<div id="page-tcl" class="hidden relative z-10 max-w-5xl mx-auto px-6 py-10 page-content">
++<div id="page-tcl" class="relative z-10 max-w-5xl mx-auto px-6 py-10 page-content{% if default_client!='tcl' %} hidden{% endif %}">
+ 
+   <!-- ── STEP 1: Upload ─────────────────────────────────────────────────── -->
+   <div id="t-step-upload">
+@@ -1201,7 +1238,7 @@
+ <!-- ══════════════════════════════════════════════════════════
+      SECTION: PHILIPS
+ ══════════════════════════════════════════════════════════ -->
+-<div id="page-philips" class="hidden relative z-10 max-w-5xl mx-auto px-6 py-10 page-content">
++<div id="page-philips" class="relative z-10 max-w-5xl mx-auto px-6 py-10 page-content{% if default_client!='philips' %} hidden{% endif %}">
+ 
+   <!-- ── STEP 1: Upload ─────────────────────────────────────────────────── -->
+   <div id="p-step-upload">
+@@ -1437,7 +1474,7 @@
+ <!-- ══════════════════════════════════════════════════════════
+      PORTAL TAB: SMS NONCONFORMING (placeholder)
+ ══════════════════════════════════════════════════════════ -->
+-<div id="portal-content-sms-nonconforming" class="hidden relative z-10 max-w-3xl mx-auto px-6 py-24 text-center">
++<div id="portal-content-sms-nonconforming" class="relative z-10 max-w-3xl mx-auto px-6 py-24 text-center{% if default_portal!='sms-nonconforming' %} hidden{% endif %}">
+   <div class="w-14 h-14 rounded-xl bg-ink-100 border border-steel/30 flex items-center justify-center mx-auto mb-5 text-2xl">🛠</div>
+   <h1 class="text-2xl font-semibold text-slate-100 tracking-tight mb-2">SMS NonConforming</h1>
+   <p class="text-steel text-sm max-w-md mx-auto">Not built yet — this tab is reserved for the next module in the portal.</p>
+@@ -1446,7 +1483,7 @@
+ <!-- ══════════════════════════════════════════════════════════
+      PORTAL TAB: TBD 2 (placeholder)
+ ══════════════════════════════════════════════════════════ -->
+-<div id="portal-content-tbd2" class="hidden relative z-10 max-w-3xl mx-auto px-6 py-24 text-center">
++<div id="portal-content-tbd2" class="relative z-10 max-w-3xl mx-auto px-6 py-24 text-center{% if default_portal!='tbd2' %} hidden{% endif %}">
+   <div class="w-14 h-14 rounded-xl bg-ink-100 border border-steel/30 flex items-center justify-center mx-auto mb-5 text-2xl">🛠</div>
+   <h1 class="text-2xl font-semibold text-slate-100 tracking-tight mb-2">TBD 2</h1>
+   <p class="text-steel text-sm max-w-md mx-auto">Not built yet — this tab is reserved for a future module.</p>
+diff --git a/templates/login.html b/templates/login.html
+new file mode 100644
+index 0000000..d099921
+--- /dev/null
++++ b/templates/login.html
+@@ -0,0 +1,121 @@
++<!DOCTYPE html>
++<html lang="en" data-theme="dark">
++<head>
++  <meta charset="UTF-8" />
++  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++  <title>Log in — Logicore Portal</title>
++  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
++  <link rel="stylesheet" href="/static/css/app.css" />
++  <style>
++    body {
++      margin: 0;
++      min-height: 100vh;
++      display: flex;
++      align-items: center;
++      justify-content: center;
++      background: var(--bg);
++      color: var(--text);
++      font-family: var(--font-sans);
++    }
++    .login-card {
++      width: 100%;
++      max-width: 380px;
++      padding: 2.25rem;
++      background: var(--bg-50);
++      border: 1px solid var(--border);
++      border-radius: var(--radius-lg);
++      box-shadow: var(--shadow-lg);
++    }
++    .login-brand {
++      display: flex;
++      align-items: center;
++      gap: 0.75rem;
++      margin-bottom: 1.75rem;
++    }
++    .login-brand img { width: 34px; height: 34px; }
++    .login-brand-word {
++      font-family: var(--font-display);
++      font-weight: 600;
++      font-size: 1.15rem;
++      letter-spacing: 0.02em;
++    }
++    .login-brand-sub {
++      font-family: var(--font-mono);
++      font-size: 0.7rem;
++      text-transform: uppercase;
++      letter-spacing: 0.08em;
++      color: var(--text-muted);
++    }
++    label {
++      display: block;
++      font-family: var(--font-mono);
++      font-size: 0.7rem;
++      text-transform: uppercase;
++      letter-spacing: 0.06em;
++      color: var(--text-muted);
++      margin-bottom: 0.375rem;
++    }
++    input[type="text"], input[type="password"] {
++      width: 100%;
++      box-sizing: border-box;
++      padding: 0.625rem 0.75rem;
++      margin-bottom: 1.1rem;
++      background: var(--bg-input);
++      border: 1px solid var(--border);
++      border-radius: var(--radius-sm);
++      color: var(--text);
++      font-size: 0.9rem;
++    }
++    input:focus { outline: none; border-color: var(--accent); }
++    button[type="submit"] {
++      width: 100%;
++      padding: 0.7rem;
++      background: var(--accent);
++      color: #06110d;
++      border: none;
++      border-radius: var(--radius-sm);
++      font-family: var(--font-mono);
++      font-weight: 600;
++      font-size: 0.8rem;
++      text-transform: uppercase;
++      letter-spacing: 0.05em;
++      cursor: pointer;
++    }
++    button[type="submit"]:hover { background: var(--accent-glow); }
++    .flash {
++      padding: 0.6rem 0.8rem;
++      border-radius: var(--radius-sm);
++      font-size: 0.85rem;
++      margin-bottom: 1.1rem;
++    }
++    .flash-error { background: rgba(239,68,68,.12); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
++    .flash-success { background: rgba(47,216,166,.12); color: var(--accent-glow); border: 1px solid rgba(47,216,166,.3); }
++  </style>
++</head>
++<body>
++  <div class="login-card">
++    <div class="login-brand">
++      <img src="/static/logicore_mark.png" alt="Logicore" />
++      <div>
++        <div class="login-brand-word">LOGICORE</div>
++        <div class="login-brand-sub">Portal</div>
++      </div>
++    </div>
++
++    {% with messages = get_flashed_messages(with_categories=true) %}
++      {% for category, message in messages %}
++        <div class="flash {% if category == 'error' %}flash-error{% else %}flash-success{% endif %}">{{ message }}</div>
++      {% endfor %}
++    {% endwith %}
++
++    <form method="POST" action="{{ url_for('login') }}">
++      <input type="hidden" name="next" value="{{ next_url }}">
++      <label for="username">Username</label>
++      <input type="text" id="username" name="username" autofocus required>
++      <label for="password">Password</label>
++      <input type="password" id="password" name="password" required>
++      <button type="submit">Log in</button>
++    </form>
++  </div>
++</body>
++</html>
+diff --git a/training_tracker/app.py b/training_tracker/app.py
+index 3da61ff..244f287 100644
+--- a/training_tracker/app.py
++++ b/training_tracker/app.py
+@@ -16,9 +16,14 @@ from flask import (
+     Flask, render_template, request, redirect, url_for, flash, g, jsonify, session,
+     send_file, abort
+ )
+-from werkzeug.security import generate_password_hash, check_password_hash
+ from werkzeug.utils import secure_filename
+ 
++# Shared auth/permissions module (repo root) — Training Tracker no longer
++# has its own login or users table. It trusts the portal's session cookie
++# (see portal_auth.load_or_create_secret(), used for app.secret_key below)
++# and asks portal_auth for this user's Training Tracker role instead.
++import portal_auth
++
+ # ---------------------------------------------------------------------------
+ # Paths — aware of running as a normal script vs. a PyInstaller-bundled .exe.
+ # When frozen, templates are extracted to a temp folder (sys._MEIPASS) but
+@@ -69,25 +74,12 @@ def friendly(d, month_format="%B"):
+     platforms (Linux/macOS use %-d, Windows uses %#d — neither works
+     everywhere)."""
+     return f"{d.strftime(month_format)} {d.day}, {d.year}"
+-SECRET_KEY_PATH = os.path.join(DATA_DIR, ".secret_key")
+ 
+ 
+-def _load_or_create_secret_key():
+-    if os.path.exists(SECRET_KEY_PATH):
+-        with open(SECRET_KEY_PATH, "r") as f:
+-            key = f.read().strip()
+-            if key:
+-                return key
+-    key = secrets.token_hex(32)
+-    try:
+-        with open(SECRET_KEY_PATH, "w") as f:
+-            f.write(key)
+-    except Exception:
+-        pass
+-    return key
+-
+-
+-app.config["SECRET_KEY"] = _load_or_create_secret_key()
++# Must be byte-for-byte identical to the portal app's own app.secret_key so
++# a session cookie set at the top-level /login is readable here too — see
++# portal_auth.py's module docstring.
++app.config["SECRET_KEY"] = portal_auth.load_or_create_secret()
+ 
+ 
+ # ---------------------------------------------------------------------------
+@@ -384,6 +376,12 @@ def close_db(exception=None):
+         db.close()
+ 
+ 
++# portal_auth uses its own connection cached on g under a different key
++# (see portal_auth.get_db()) — needs its own teardown in this app too, since
++# each mounted Flask app has its own request/app context.
++app.teardown_appcontext(portal_auth.close_db)
++
++
+ SCHEMA = """
+ CREATE TABLE IF NOT EXISTS weeks (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+@@ -446,25 +444,23 @@ CREATE TABLE IF NOT EXISTS theme_settings (
+     value TEXT
+ );
+ 
+-CREATE TABLE IF NOT EXISTS users (
+-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+-    username TEXT UNIQUE NOT NULL,
+-    password_hash TEXT NOT NULL,
+-    role TEXT NOT NULL DEFAULT 'trainee',
+-    person_id INTEGER REFERENCES people(id) ON DELETE SET NULL,
+-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+-);
+-
+ CREATE TABLE IF NOT EXISTS signoff_uploads (
+     id INTEGER PRIMARY KEY AUTOINCREMENT,
+     session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+     filename TEXT NOT NULL,
+     original_filename TEXT,
+     content_type TEXT,
+-    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
++    uploaded_by TEXT,
+     uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
+ );
+ """
++# NOTE: Training Tracker used to have its own `users` table (auth is now
++# centralized — see portal_auth.py). That table, and the `uploaded_by
++# INTEGER REFERENCES users(id)` column it's no longer safe to write to
++# (those ids are from a completely different table now), are cleaned up by
++# migrate_drop_local_users() below rather than in this CREATE-TABLE schema,
++# so existing installs get migrated instead of just silently not creating
++# a table/column that already exists.
+ 
+ 
+ def migrate_to_sessions(db):
+@@ -561,30 +557,72 @@ def migrate_to_sessions(db):
+     print(f"Migration complete — created {len(session_for_week)} default session(s).")
+ 
+ 
++def migrate_drop_local_users(db):
++    """One-time upgrade for databases created before auth moved to the
++    shared portal_auth module. Drops the old `signoff_uploads.uploaded_by
++    INTEGER REFERENCES users(id)` column (rebuilt as a plain TEXT column
++    storing the uploader's username instead — portal_auth user ids live in
++    a different database, so the old FK can no longer be satisfied) and
++    drops the now-unused local `users` table entirely. No-ops on a fresh
++    install or a database that's already migrated.
++    """
++    db.row_factory = sqlite3.Row
++    upload_cols = [r["name"] for r in db.execute("PRAGMA table_info(signoff_uploads)").fetchall()]
++    if "uploaded_by" not in upload_cols:
++        return  # table doesn't exist yet (fresh install) — SCHEMA above creates it correctly
++    uploaded_by_type = next(
++        (r["type"] for r in db.execute("PRAGMA table_info(signoff_uploads)").fetchall() if r["name"] == "uploaded_by"),
++        "TEXT",
++    )
++    if uploaded_by_type.upper() == "TEXT":
++        return  # already migrated
++
++    print("Migrating signoff_uploads.uploaded_by off the old local users table...")
++    users_exists = db.execute(
++        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'"
++    ).fetchone()
++    db.execute("ALTER TABLE signoff_uploads RENAME TO signoff_uploads_legacy")
++    db.execute(
++        """
++        CREATE TABLE signoff_uploads (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
++            filename TEXT NOT NULL,
++            original_filename TEXT,
++            content_type TEXT,
++            uploaded_by TEXT,
++            uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
++        )
++        """
++    )
++    if users_exists:
++        db.execute(
++            """
++            INSERT INTO signoff_uploads (id, session_id, filename, original_filename, content_type, uploaded_by, uploaded_at)
++            SELECT l.id, l.session_id, l.filename, l.original_filename, l.content_type, u.username, l.uploaded_at
++            FROM signoff_uploads_legacy l LEFT JOIN users u ON u.id = l.uploaded_by
++            """
++        )
++    else:
++        db.execute(
++            """
++            INSERT INTO signoff_uploads (id, session_id, filename, original_filename, content_type, uploaded_by, uploaded_at)
++            SELECT id, session_id, filename, original_filename, content_type, NULL, uploaded_at
++            FROM signoff_uploads_legacy
++            """
++        )
++    db.execute("DROP TABLE signoff_uploads_legacy")
++    db.execute("DROP TABLE IF EXISTS users")
++    db.commit()
++    print("Migration complete.")
++
++
+ def init_db():
+     db = sqlite3.connect(DB_PATH)
+     db.execute("PRAGMA journal_mode=WAL")
+     db.executescript(SCHEMA)
+     migrate_to_sessions(db)
+-    # BEGIN IMMEDIATE takes SQLite's write lock right away, not lazily on
+-    # first write — so if two worker processes race in here at startup
+-    # (gunicorn --workers N, each importing this module and calling
+-    # init_db() independently, all at once), the second one blocks until
+-    # the first's transaction commits. Its COUNT(*) then correctly sees the
+-    # row the first worker just inserted and skips seeding, instead of both
+-    # reading 0 and crashing on the users.username UNIQUE constraint.
+-    db.execute("BEGIN IMMEDIATE")
+-    try:
+-        existing_users = db.execute("SELECT COUNT(*) c FROM users").fetchone()[0]
+-        if existing_users == 0:
+-            db.execute(
+-                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+-                ("admin", generate_password_hash("admin"), "admin"),
+-            )
+-        db.commit()
+-    except Exception:
+-        db.rollback()
+-        raise
++    migrate_drop_local_users(db)
+     db.close()
+ 
+ 
+@@ -611,31 +649,28 @@ def load_theme_colors():
+ 
+ 
+ # ---------------------------------------------------------------------------
+-# Authentication — simple username/password login backed by the users table.
+-# Roles: 'admin' (everything, incl. content/appearance/user management),
+-# 'editor' (create/edit courses, roster, attendance — not appearance/users),
+-# 'trainee' (view-only, can sign off their own attendance).
++# Authentication — delegated entirely to portal_auth (shared with the portal
++# app). Training Tracker no longer has its own login or users table; a
++# user's "role" here is just portal_auth.get_role(user, "training-tracker").
++# Roles: 'admin' (everything, incl. content/appearance), 'editor' (create/
++# edit courses, roster, attendance — not appearance), 'viewer' (read-only).
+ # ---------------------------------------------------------------------------
+ 
+ def get_current_user():
+-    if "user" in g:
+-        return g.user
+-    user_id = session.get("user_id")
+-    if not user_id:
+-        g.user = None
+-        return None
+-    db = get_db()
+-    g.user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+-    if g.user is None:
+-        session.clear()
+-    return g.user
++    return portal_auth.get_current_user()
++
++
++def get_current_role():
++    return portal_auth.get_role(get_current_user(), "training-tracker")
+ 
+ 
+ def login_required(view):
+     @wraps(view)
+     def wrapped(*args, **kwargs):
+-        if not get_current_user():
+-            return redirect(url_for("login", next=request.path))
++        user = get_current_user()
++        if not user or get_current_role() is None:
++            script_name = request.environ.get("SCRIPT_NAME", "")
++            return redirect(f"/login?next={script_name}{request.path}")
+         return view(*args, **kwargs)
+     return wrapped
+ 
+@@ -645,9 +680,11 @@ def roles_required(*roles):
+         @wraps(view)
+         def wrapped(*args, **kwargs):
+             user = get_current_user()
+-            if not user:
+-                return redirect(url_for("login", next=request.path))
+-            if user["role"] not in roles:
++            role = get_current_role()
++            if not user or role is None:
++                script_name = request.environ.get("SCRIPT_NAME", "")
++                return redirect(f"/login?next={script_name}{request.path}")
++            if role not in roles:
+                 flash("You don't have permission to do that.", "error")
+                 return redirect(url_for("index"))
+             return view(*args, **kwargs)
+@@ -670,18 +707,26 @@ def inject_globals():
+ 
+     theme = build_theme(load_theme_colors())
+     user = get_current_user()
+-    is_admin = bool(user and user["role"] == "admin")
+-    can_manage_courses = bool(user and user["role"] in ("admin", "editor"))
+-    using_default_admin_password = bool(
+-        user and user["username"] == "admin" and check_password_hash(user["password_hash"], "admin")
+-    )
++    role = get_current_role()
++    is_admin = role == "admin"
++    can_manage_courses = role in ("admin", "editor")
++    using_default_admin_password = portal_auth.using_default_admin_password(user)
+     return {
+         "c": c,
+         "theme": theme,
+         "user": user,
++        "role": role,
+         "is_admin": is_admin,
+         "can_manage_courses": can_manage_courses,
+         "using_default_admin_password": using_default_admin_password,
++        # Shared portal sidebar (this base.html reuses index.html's markup —
++        # see the "Portal shell" notes) needs the same nav-visibility flags
++        # as the portal app itself, so an unpermissioned section doesn't
++        # show up in the sidebar just because someone's inside Training Tracker.
++        "can_invoice_generator": bool(portal_auth.accessible_children(user, "invoice-generator")),
++        "can_sms_nonconforming": portal_auth.has_access(user, "sms-nonconforming"),
++        "can_tbd2": portal_auth.has_access(user, "tbd2"),
++        "is_superadmin": bool(user and user.get("is_superadmin")),
+     }
+ 
+ 
+@@ -1242,63 +1287,6 @@ def toggle_attendance(session_id):
+     return jsonify({"ok": True})
+ 
+ 
+-@app.route("/session/<int:session_id>/signoff")
+-@login_required
+-def signoff_sheet(session_id):
+-    db = get_db()
+-    sess = get_session_or_404(db, session_id)
+-    week = get_week_or_404(db, sess["week_id"])
+-    user = get_current_user()
+-    people = db.execute("SELECT * FROM people ORDER BY name ASC").fetchall()
+-    attendance_rows = db.execute("SELECT * FROM attendance WHERE session_id = ?", (session_id,)).fetchall()
+-    attendance_map = {a["person_id"]: a for a in attendance_rows}
+-    roster = []
+-    for p in people:
+-        a = attendance_map.get(p["id"])
+-        if not a or not a["attended"]:
+-            continue
+-        # Trainees only see/sign their own row; admins and editors can see
+-        # and sign for anyone (useful for a shared kiosk at a training).
+-        if user["role"] == "trainee" and p["id"] != user["person_id"]:
+-            continue
+-        roster.append(
+-            {"person": p, "signed": bool(a["signature"]), "signature": a["signature"], "signed_at": a["signed_at"]}
+-        )
+-    today = friendly(date.today())
+-    return render_template("sign.html", week=week, session=sess, roster=roster, today=today)
+-
+-
+-@app.route("/session/<int:session_id>/sign/<int:person_id>", methods=["POST"])
+-@login_required
+-def submit_signature(session_id, person_id):
+-    db = get_db()
+-    get_session_or_404(db, session_id)
+-    user = get_current_user()
+-    if user["role"] == "trainee" and person_id != user["person_id"]:
+-        flash("You can only sign for yourself.", "error")
+-        return redirect(url_for("signoff_sheet", session_id=session_id))
+-    signature = request.form.get("signature", "")
+-    if not signature:
+-        flash("Please provide a signature before submitting.", "error")
+-        return redirect(url_for("signoff_sheet", session_id=session_id))
+-    signed_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+-    existing = db.execute(
+-        "SELECT * FROM attendance WHERE session_id = ? AND person_id = ?", (session_id, person_id)
+-    ).fetchone()
+-    if existing:
+-        db.execute(
+-            "UPDATE attendance SET signature = ?, signed_at = ?, attended = 1 WHERE session_id = ? AND person_id = ?",
+-            (signature, signed_at, session_id, person_id),
+-        )
+-    else:
+-        db.execute(
+-            "INSERT INTO attendance (session_id, person_id, attended, signature, signed_at) VALUES (?, ?, 1, ?, ?)",
+-            (session_id, person_id, signature, signed_at),
+-        )
+-    db.commit()
+-    return redirect(url_for("signoff_sheet", session_id=session_id))
+-
+-
+ @app.route("/session/<int:session_id>/signoff/download")
+ @roles_required("admin", "editor")
+ def download_signoff_template(session_id):
+@@ -1346,13 +1334,13 @@ def upload_signoff_scan(session_id):
+         db.execute(
+             "UPDATE signoff_uploads SET filename = ?, original_filename = ?, content_type = ?, "
+             "uploaded_by = ?, uploaded_at = CURRENT_TIMESTAMP WHERE session_id = ?",
+-            (stored_name, secure_filename(file.filename), file.content_type, user["id"], session_id),
++            (stored_name, secure_filename(file.filename), file.content_type, user["username"], session_id),
+         )
+     else:
+         db.execute(
+             "INSERT INTO signoff_uploads (session_id, filename, original_filename, content_type, uploaded_by) "
+             "VALUES (?, ?, ?, ?, ?)",
+-            (session_id, stored_name, secure_filename(file.filename), file.content_type, user["id"]),
++            (session_id, stored_name, secure_filename(file.filename), file.content_type, user["username"]),
+         )
+     db.commit()
+     flash("Signed sheet uploaded.", "success")
+@@ -1442,77 +1430,38 @@ def report_attendance_matrix():
+ # Routes: Authentication
+ # ---------------------------------------------------------------------------
+ 
+-@app.route("/login", methods=["GET", "POST"])
+-def login():
+-    if request.method == "POST":
+-        username = request.form.get("username", "").strip()
+-        password = request.form.get("password", "")
+-        db = get_db()
+-        row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+-        if row and check_password_hash(row["password_hash"], password):
+-            session.clear()
+-            session["user_id"] = row["id"]
+-            session.permanent = True
+-            next_url = request.form.get("next") or request.args.get("next") or url_for("index")
+-            return redirect(next_url)
+-        flash("Incorrect username or password.", "error")
+-    next_url = request.args.get("next", "")
+-    return render_template("login.html", next_url=next_url)
+-
+-
+-@app.route("/logout", methods=["POST"])
+-def logout():
+-    session.clear()
+-    flash("Signed out.", "success")
+-    return redirect(url_for("login"))
+-
+-
+-@app.route("/account", methods=["GET", "POST"])
++# ---------------------------------------------------------------------------
++# Routes: Authentication
++# ---------------------------------------------------------------------------
++# Training Tracker no longer has its own login/logout — both live at the
++# portal's top level (see app.py). Templates link to "/login" and "/logout"
++# directly (absolute paths, not url_for, since those endpoints don't exist
++# in this app) — see base.html.
++
++
++@app.route("/account")
+ @login_required
+ def account():
+     user = get_current_user()
+-    if request.method == "POST":
+-        current_password = request.form.get("current_password", "")
+-        new_password = request.form.get("new_password", "")
+-        confirm_password = request.form.get("confirm_password", "")
+-        if not check_password_hash(user["password_hash"], current_password):
+-            flash("Current password is incorrect.", "error")
+-        elif len(new_password) < 4:
+-            flash("New password must be at least 4 characters.", "error")
+-        elif new_password != confirm_password:
+-            flash("New passwords don't match.", "error")
+-        else:
+-            db = get_db()
+-            db.execute(
+-                "UPDATE users SET password_hash = ? WHERE id = ?",
+-                (generate_password_hash(new_password), user["id"]),
+-            )
+-            db.commit()
+-            flash("Password updated.", "success")
+-            return redirect(url_for("account"))
+-    return render_template("account.html")
++    return render_template("account.html", role=get_current_role())
+ 
+ 
+ # ---------------------------------------------------------------------------
+-# Routes: Admin — content, appearance & user management
++# Routes: Admin — content & appearance only. User/permission management
++# moved to the portal's top-level Users & Permissions screen (/admin/permissions).
+ # ---------------------------------------------------------------------------
+ 
+ @app.route("/admin")
+ @roles_required("admin")
+ def admin_content():
+-    db = get_db()
+     content = load_content()
+     colors = load_theme_colors()
+-    users = db.execute("SELECT * FROM users ORDER BY username ASC").fetchall()
+-    people = db.execute("SELECT * FROM people ORDER BY name ASC").fetchall()
+     return render_template(
+         "admin.html",
+         schema=CONTENT_SCHEMA,
+         values=content,
+         theme_fields=THEME_FIELDS,
+         colors=colors,
+-        users=users,
+-        people=people,
+     )
+ 
+ 
+@@ -1565,93 +1514,9 @@ def admin_reset():
+     return redirect(url_for("admin_content"))
+ 
+ 
+-@app.route("/admin/users/new", methods=["POST"])
+-@roles_required("admin")
+-def admin_new_user():
+-    db = get_db()
+-    username = request.form.get("username", "").strip()
+-    password = request.form.get("password", "")
+-    role = request.form.get("role", "trainee")
+-    if role not in ("admin", "editor", "trainee"):
+-        role = "trainee"
+-    person_id = request.form.get("person_id") or None
+-    if not username or not password:
+-        flash("Username and password are required.", "error")
+-        return redirect(url_for("admin_content") + "#users")
+-    if len(password) < 4:
+-        flash("Password must be at least 4 characters.", "error")
+-        return redirect(url_for("admin_content") + "#users")
+-    taken = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+-    if taken:
+-        flash(f'The username "{username}" is already taken.', "error")
+-        return redirect(url_for("admin_content") + "#users")
+-    db.execute(
+-        "INSERT INTO users (username, password_hash, role, person_id) VALUES (?, ?, ?, ?)",
+-        (username, generate_password_hash(password), role, person_id),
+-    )
+-    db.commit()
+-    flash(f'User "{username}" created.', "success")
+-    return redirect(url_for("admin_content") + "#users")
+-
+-
+-@app.route("/admin/users/<int:user_id>/update", methods=["POST"])
+-@roles_required("admin")
+-def admin_update_user(user_id):
+-    db = get_db()
+-    role = request.form.get("role", "trainee")
+-    if role not in ("admin", "editor", "trainee"):
+-        role = "trainee"
+-    person_id = request.form.get("person_id") or None
+-    new_password = request.form.get("password", "").strip()
+-
+-    target = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+-    if not target:
+-        flash("User not found.", "error")
+-        return redirect(url_for("admin_content") + "#users")
+-
+-    admin_count = db.execute("SELECT COUNT(*) c FROM users WHERE role = 'admin'").fetchone()["c"]
+-    if target["role"] == "admin" and role != "admin" and admin_count <= 1:
+-        flash("Can't demote the last remaining admin.", "error")
+-        return redirect(url_for("admin_content") + "#users")
+-
+-    db.execute("UPDATE users SET role = ?, person_id = ? WHERE id = ?", (role, person_id, user_id))
+-    if new_password:
+-        if len(new_password) < 4:
+-            flash("Password must be at least 4 characters — role/roster link were saved, password was not.", "error")
+-            return redirect(url_for("admin_content") + "#users")
+-        db.execute(
+-            "UPDATE users SET password_hash = ? WHERE id = ?",
+-            (generate_password_hash(new_password), user_id),
+-        )
+-    db.commit()
+-    flash(f'User "{target["username"]}" updated.', "success")
+-    return redirect(url_for("admin_content") + "#users")
+-
+-
+-@app.route("/admin/users/<int:user_id>/delete", methods=["POST"])
+-@roles_required("admin")
+-def admin_delete_user(user_id):
+-    db = get_db()
+-    current = get_current_user()
+-    target = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+-    if not target:
+-        flash("User not found.", "error")
+-        return redirect(url_for("admin_content") + "#users")
+-    if target["id"] == current["id"]:
+-        flash("You can't delete your own account while logged in.", "error")
+-        return redirect(url_for("admin_content") + "#users")
+-    admin_count = db.execute("SELECT COUNT(*) c FROM users WHERE role = 'admin'").fetchone()["c"]
+-    if target["role"] == "admin" and admin_count <= 1:
+-        flash("Can't delete the last remaining admin account.", "error")
+-        return redirect(url_for("admin_content") + "#users")
+-    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
+-    db.commit()
+-    flash(f'User "{target["username"]}" removed.', "success")
+-    return redirect(url_for("admin_content") + "#users")
+-
+-
+ # ---------------------------------------------------------------------------
+ 
++
+ @app.template_filter("friendly_date")
+ def friendly_date(value):
+     if not value:
+diff --git a/training_tracker/templates/account.html b/training_tracker/templates/account.html
+index 0d3faf4..3552679 100644
+--- a/training_tracker/templates/account.html
++++ b/training_tracker/templates/account.html
+@@ -4,25 +4,16 @@
+ {% block content %}
+ <div class="max-w-sm mx-auto">
+   <div class="mb-6">
+-    <p class="font-mono text-xs uppercase tracking-widest text-amber-dark mb-1">{{ user.username }} · {{ user.role | capitalize }}</p>
++    <p class="font-mono text-xs uppercase tracking-widest text-amber-dark mb-1">{{ user.username }} · {{ role | capitalize }}</p>
+     <h1 class="font-display text-3xl text-ink">{{ c('account.heading') }}</h1>
+   </div>
+ 
+   <div class="bg-parchment-dim border border-parchment-line rounded-lg p-6">
+-    <form method="POST">
+-      <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('account.current_password_label') }}</label>
+-      <input type="password" name="current_password" autocomplete="current-password" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+-
+-      <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('account.new_password_label') }}</label>
+-      <input type="password" name="new_password" autocomplete="new-password" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+-
+-      <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('account.confirm_password_label') }}</label>
+-      <input type="password" name="confirm_password" autocomplete="new-password" class="w-full mb-6 px-3 py-2 rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+-
+-      <button type="submit" class="w-full bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-4 py-3 rounded-md">
+-        {{ c('account.submit_btn') }}
+-      </button>
+-    </form>
++    <p class="font-body text-sm text-ink-light">
++      Your username, password, and Training Tracker role are managed centrally
++      from the portal's <strong>Users &amp; Permissions</strong> screen — a
++      superadmin can reset your password or change your role from there.
++    </p>
+   </div>
+ </div>
+ {% endblock %}
+diff --git a/training_tracker/templates/admin.html b/training_tracker/templates/admin.html
+index 82516b9..b077c1d 100644
+--- a/training_tracker/templates/admin.html
++++ b/training_tracker/templates/admin.html
+@@ -11,7 +11,6 @@
+ <div class="flex gap-4 mb-8 font-mono text-xs uppercase tracking-widest">
+   <a href="#content" class="border-b-2 border-amber text-amber-dark pb-1">Content</a>
+   <a href="#appearance" class="border-b-2 border-transparent text-ink-faint hover:text-amber-dark pb-1">Appearance</a>
+-  <a href="#users" class="border-b-2 border-transparent text-ink-faint hover:text-amber-dark pb-1">Users</a>
+ </div>
+ 
+ <!-- ===================== CONTENT ===================== -->
+@@ -99,105 +98,9 @@
+   </form>
+ </section>
+ 
+-<!-- ===================== USERS ===================== -->
+-<section id="users" class="mt-14 scroll-mt-6">
+-  <h2 class="font-display text-2xl text-ink mb-2">Users</h2>
+-  <p class="font-body text-sm text-ink-faint mb-5">
+-    <strong>Admin</strong> can do anything, including this page. <strong>Editor</strong> can create/edit weeks,
+-    lesson plans, roster, and attendance, but not appearance or users. <strong>Viewer</strong> can only view weeks
+-    and roster — read-only, no editing. Attendees no longer need an account: the sign-off sheet link works without
+-    logging in, so accounts here are only for trainers (and anyone who just needs to browse).
+-  </p>
++<p class="font-body text-sm text-ink-faint mt-10 border-t border-parchment-line pt-6">
++  Users, passwords, and roles (Admin / Editor / Viewer) for Training Tracker are
++  managed from the portal's <strong>Users &amp; Permissions</strong> screen, not here.
++</p>
+ 
+-  {% if users %}
+-  <div class="bg-parchment-dim border border-parchment-line rounded-lg overflow-hidden mb-6">
+-    <table class="w-full text-sm">
+-      <thead>
+-        <tr class="border-b border-parchment-line font-mono text-[11px] uppercase tracking-wide text-ink-faint text-left">
+-          <th class="px-4 py-3">Username</th>
+-          <th class="px-4 py-3">Role</th>
+-          <th class="px-4 py-3">Linked roster person</th>
+-          <th class="px-4 py-3">Reset password</th>
+-          <th class="px-4 py-3"></th>
+-        </tr>
+-      </thead>
+-      <tbody>
+-        {% for u in users %}
+-        <tr class="border-b border-parchment-line last:border-0">
+-          <td class="px-4 py-3 font-body text-ink font-medium align-middle">{{ u.username }}</td>
+-          <td class="px-4 py-2 align-middle">
+-            <select form="update_user_{{ u.id }}" name="role" class="px-2 py-1.5 text-xs font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-1 focus:ring-amber">
+-              <option value="admin" {% if u.role == 'admin' %}selected{% endif %}>Admin</option>
+-              <option value="editor" {% if u.role == 'editor' %}selected{% endif %}>Editor</option>
+-              <option value="trainee" {% if u.role == 'trainee' %}selected{% endif %}>Viewer</option>
+-            </select>
+-          </td>
+-          <td class="px-4 py-2 align-middle">
+-            <select form="update_user_{{ u.id }}" name="person_id" class="px-2 py-1.5 text-xs font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-1 focus:ring-amber max-w-[160px]">
+-              <option value="">— none —</option>
+-              {% for p in people %}
+-              <option value="{{ p.id }}" {% if u.person_id == p.id %}selected{% endif %}>{{ p.name }}</option>
+-              {% endfor %}
+-            </select>
+-          </td>
+-          <td class="px-4 py-2 align-middle">
+-            <input form="update_user_{{ u.id }}" type="password" name="password" placeholder="leave blank to keep" class="w-40 px-2 py-1.5 text-xs font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-1 focus:ring-amber">
+-          </td>
+-          <td class="px-4 py-2 align-middle whitespace-nowrap">
+-            <!-- This empty form has no visible fields of its own — the inputs
+-                 above are wired to it via their form="update_user_{{ u.id }}"
+-                 attribute, since a <form> can't span table cells directly. -->
+-            <form id="update_user_{{ u.id }}" method="POST" action="{{ url_for('admin_update_user', user_id=u.id) }}" class="inline">
+-              <button type="submit" class="font-mono text-[11px] uppercase tracking-wide bg-amber text-ink px-3 py-1.5 rounded-md hover:bg-ink-light">Save</button>
+-            </form>
+-            <form method="POST" action="{{ url_for('admin_delete_user', user_id=u.id) }}" class="inline" onsubmit="return confirm({{ ('Remove user \"' ~ u.username ~ '\"?') | tojson }})">
+-              <button class="font-mono text-[11px] uppercase tracking-wide text-ink-faint hover:text-rose px-2">Remove</button>
+-            </form>
+-          </td>
+-        </tr>
+-        {% endfor %}
+-      </tbody>
+-    </table>
+-  </div>
+-  {% endif %}
+-
+-  <div class="bg-parchment-dim border border-parchment-line rounded-lg p-6 max-w-lg">
+-    <h3 class="font-display text-lg text-ink mb-4">Add User</h3>
+-    <form method="POST" action="{{ url_for('admin_new_user') }}">
+-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
+-        <div>
+-          <label class="block font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1">Username</label>
+-          <input name="username" required class="w-full px-3 py-2 text-sm rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+-        </div>
+-        <div>
+-          <label class="block font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1">Password</label>
+-          <input type="password" name="password" required class="w-full px-3 py-2 text-sm rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+-        </div>
+-        <div>
+-          <label class="block font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1">Role</label>
+-          <select name="role" class="w-full px-3 py-2 text-sm font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+-            <option value="editor" selected>Editor</option>
+-            <option value="admin">Admin</option>
+-            <option value="trainee">Viewer</option>
+-          </select>
+-        </div>
+-        <div>
+-          <label class="block font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1">Linked roster person</label>
+-          <select name="person_id" class="w-full px-3 py-2 text-sm font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+-            <option value="">— none —</option>
+-            {% for p in people %}
+-            <option value="{{ p.id }}">{{ p.name }}</option>
+-            {% endfor %}
+-          </select>
+-        </div>
+-      </div>
+-      <button type="submit" class="w-full bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-4 py-2.5 rounded-md">
+-        Create User
+-      </button>
+-    </form>
+-    {% if not people %}
+-    <p class="font-mono text-[11px] text-ink-faint mt-3">No one is on the <a href="{{ url_for('people_page') }}" class="text-amber-dark underline">roster</a> yet — add people there first if you want to link trainee accounts to them.</p>
+-    {% endif %}
+-  </div>
+-</section>
+ {% endblock %}
+diff --git a/training_tracker/templates/base.html b/training_tracker/templates/base.html
+index 2832e5c..04342b8 100644
+--- a/training_tracker/templates/base.html
++++ b/training_tracker/templates/base.html
+@@ -127,12 +127,12 @@
+   <nav class="sidebar-nav">
+     <div class="sidebar-section-label">Portal</div>
+ 
+-    <button class="side-link portal-nav-btn text-steel" data-portal="invoice-generator" id="portal-nav-invoice-generator" onclick="showPortalPage('invoice-generator')">
++    <button class="side-link portal-nav-btn text-steel" data-portal="invoice-generator" id="portal-nav-invoice-generator" onclick="showPortalPage('invoice-generator')" {% if not can_invoice_generator %}style="display:none"{% endif %}>
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+       <span>Invoice Generator</span>
+     </button>
+ 
+-    <button class="side-link portal-nav-btn text-steel" data-portal="sms-nonconforming" id="portal-nav-sms-nonconforming" onclick="showPortalPage('sms-nonconforming')">
++    <button class="side-link portal-nav-btn text-steel" data-portal="sms-nonconforming" id="portal-nav-sms-nonconforming" onclick="showPortalPage('sms-nonconforming')" {% if not can_sms_nonconforming %}style="display:none"{% endif %}>
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.3 3.3 2.3 18a1.5 1.5 0 0 0 1.3 2.2h16.8a1.5 1.5 0 0 0 1.3-2.2l-8-14.7a1.5 1.5 0 0 0-2.6 0Z"/><path d="M12 9v4M12 17h.01"/></svg>
+       <span>SMS NonConforming</span>
+     </button>
+@@ -142,7 +142,7 @@
+       <span>Training Tracker</span>
+     </a>
+ 
+-    <button class="side-link portal-nav-btn text-steel" data-portal="tbd2" id="portal-nav-tbd2" onclick="showPortalPage('tbd2')">
++    <button class="side-link portal-nav-btn text-steel" data-portal="tbd2" id="portal-nav-tbd2" onclick="showPortalPage('tbd2')" {% if not can_tbd2 %}style="display:none"{% endif %}>
+       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-2.5 2-2.5 3.5M12 17h.01"/></svg>
+       <span>TBD 2</span>
+     </button>
+@@ -178,13 +178,16 @@
+         {{ c('nav.admin') }}
+       </a>
+       {% endif %}
++      {% if is_superadmin %}
++      <a href="/admin/permissions" class="hover:text-amber-light transition-colors">Users &amp; Permissions</a>
++      {% endif %}
+       <span class="w-px h-4 bg-parchment/20"></span>
+-      <a href="{{ url_for('account') }}" class="hover:text-amber-light transition-colors {% if request.endpoint == 'account' %}text-amber-light{% endif %}" title="{{ user.role | capitalize }}">{{ user.username }}</a>
+-      <form method="POST" action="{{ url_for('logout') }}">
++      <a href="{{ url_for('account') }}" class="hover:text-amber-light transition-colors {% if request.endpoint == 'account' %}text-amber-light{% endif %}" title="{{ role | capitalize }}">{{ user.username }}</a>
++      <form method="POST" action="/logout">
+         <button type="submit" class="hover:text-rose transition-colors normal-case font-mono text-sm">{{ c('nav.logout') }}</button>
+       </form>
+       {% else %}
+-      <a href="{{ url_for('login') }}" class="hover:text-amber-light transition-colors">{{ c('nav.login') }}</a>
++      <a href="/login" class="hover:text-amber-light transition-colors">{{ c('nav.login') }}</a>
+       {% endif %}
+     </nav>
+   </div>
+@@ -194,7 +197,7 @@
+ <div class="bg-rose text-white">
+   <div class="max-w-6xl mx-auto px-6 py-2.5 font-mono text-xs uppercase tracking-wide flex items-center justify-between gap-4">
+     <span>You're still using the default admin/admin login — change it now.</span>
+-    <a href="{{ url_for('account') }}" class="underline shrink-0">Change password</a>
++    <a href="/admin/permissions" class="underline shrink-0">Change password</a>
+   </div>
+ </div>
+ {% endif %}
+diff --git a/training_tracker/templates/login.html b/training_tracker/templates/login.html
+deleted file mode 100644
+index 7291e30..0000000
+--- a/training_tracker/templates/login.html
++++ /dev/null
+@@ -1,27 +0,0 @@
+-{% extends "base.html" %}
+-{% block title %}{{ c('login.heading') }} · {{ c('site.name') }}{% endblock %}
+-
+-{% block content %}
+-<div class="max-w-sm mx-auto mt-10">
+-  <div class="bg-parchment-dim border border-parchment-line rounded-lg p-8">
+-    <h1 class="font-display text-3xl text-ink mb-1 text-center">{{ c('login.heading') }}</h1>
+-    <p class="font-body text-sm text-ink-faint mb-6 text-center">{{ c('login.subheading') }}</p>
+-
+-    <form method="POST">
+-      <input type="hidden" name="next" value="{{ next_url }}">
+-      <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('login.username_label') }}</label>
+-      <input name="username" autofocus autocapitalize="off" autocomplete="username" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+-
+-      <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('login.password_label') }}</label>
+-      <input type="password" name="password" autocomplete="current-password" class="w-full mb-6 px-3 py-2 rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+-
+-      <button type="submit" class="w-full bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-4 py-3 rounded-md">
+-        {{ c('login.submit_btn') }}
+-      </button>
+-    </form>
+-  </div>
+-  <p class="text-center font-mono text-[11px] text-ink-faint uppercase tracking-wide mt-4">
+-    First time? Default login is admin / admin — change it after signing in.
+-  </p>
+-</div>
+-{% endblock %}
+diff --git a/training_tracker/templates/sign.html b/training_tracker/templates/sign.html
+deleted file mode 100644
+index 6276539..0000000
+--- a/training_tracker/templates/sign.html
++++ /dev/null
+@@ -1,144 +0,0 @@
+-{% extends "base.html" %}
+-{% block title %}{{ week.title }} — {{ session.trainer_name }} · {{ c('sign.eyebrow') }} · {{ c('site.name') }}{% endblock %}
+-{% block meta_description %}Attendance sign-off sheet for {{ week.title }} ({{ session.trainer_name }}), {{ c('site.name') }}{% endblock %}
+-
+-{% block content %}
+-<a href="{{ url_for('week_detail', week_id=week.id) }}" class="inline-flex items-center gap-1 font-mono text-xs uppercase tracking-widest text-ink-faint hover:text-amber-dark mb-6">
+-  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+-  {{ c('sign.back_link') }}
+-</a>
+-
+-<div class="mb-8">
+-  <p class="font-mono text-xs uppercase tracking-widest text-amber-dark mb-1">{{ c('sign.eyebrow') }} · {{ session.trainer_name }}</p>
+-  <h1 class="font-display text-4xl text-ink">{{ week.title }}</h1>
+-  <p class="font-mono text-xs text-ink-faint uppercase tracking-wide mt-1">{{ c('sign.subheading') }}</p>
+-</div>
+-
+-{% if not roster %}
+-<div class="border border-dashed border-parchment-line rounded-lg p-10 text-center bg-parchment-dim/40">
+-  {% if user.role == 'trainee' and not user.person_id %}
+-  <p class="font-mono text-sm text-ink-faint">{{ c('sign.not_linked') }}</p>
+-  {% else %}
+-  <p class="font-mono text-sm text-ink-faint">{{ c('sign.empty') }}</p>
+-  {% endif %}
+-</div>
+-{% else %}
+-<div class="bg-parchment-dim border border-parchment-line rounded-lg overflow-hidden">
+-  {% for r in roster %}
+-  <div class="flex items-center justify-between gap-6 px-6 py-5 {% if not loop.last %}border-b border-parchment-line{% endif %}">
+-    <div class="min-w-0">
+-      <p class="font-display text-lg text-ink">{{ r.person.name }}</p>
+-      {% if r.signed %}
+-      <p class="font-mono text-[11px] text-sage uppercase tracking-wide mt-0.5">{{ c('sign.signed_prefix') }} {{ r.signed_at }}</p>
+-      {% else %}
+-      <p class="font-mono text-[11px] text-ink-faint uppercase tracking-wide mt-0.5">{{ c('sign.awaiting') }}</p>
+-      {% endif %}
+-    </div>
+-
+-    {% if r.signed %}
+-    <img src="{{ r.signature }}" alt="Signature of {{ r.person.name }}" class="h-14 border-b-2 border-ink-faint/30">
+-    {% else %}
+-    <button onclick="openSignDialog({{ r.person.id }}, {{ r.person.name | tojson }})" class="shrink-0 bg-amber hover:bg-amber-dark text-ink font-mono text-xs uppercase tracking-wide px-5 py-2.5 rounded-md">
+-      {{ c('sign.sign_btn') }}
+-    </button>
+-    {% endif %}
+-  </div>
+-  {% endfor %}
+-</div>
+-{% endif %}
+-
+-<dialog id="signDialog" class="rounded-lg p-0 backdrop:bg-parchment/70 w-full max-w-lg">
+-  <div class="bg-parchment p-6 rounded-lg border border-parchment-line">
+-    <h3 class="font-display text-2xl text-ink mb-1">{{ c('sign.sign_btn') }} <span id="signName" class="text-amber-dark"></span></h3>
+-    <p class="font-mono text-[11px] text-ink-faint uppercase tracking-wide mb-4">{{ c('sign.dialog_subheading') }}</p>
+-
+-    <div class="bg-parchment-dim border border-parchment-line rounded-md ruled-line">
+-      <canvas id="sigCanvas" width="440" height="180" class="w-full touch-none cursor-crosshair"></canvas>
+-    </div>
+-
+-    <div class="flex justify-between items-center mt-3 mb-6">
+-      <button type="button" onclick="clearCanvas()" class="font-mono text-xs uppercase tracking-wide text-ink-faint hover:text-rose">{{ c('sign.clear_btn') }}</button>
+-      <p class="font-mono text-[11px] text-ink-faint">{{ today }}</p>
+-    </div>
+-
+-    <form id="signForm" method="POST">
+-      <input type="hidden" name="signature" id="signatureData">
+-      <div class="flex justify-end gap-3">
+-        <button type="button" onclick="signDialog.close()" class="font-mono text-sm uppercase tracking-wide text-ink-faint px-4 py-2 hover:text-ink">{{ c('sign.cancel_btn') }}</button>
+-        <button type="button" onclick="submitSignature()" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-5 py-2 rounded-md">{{ c('sign.confirm_btn') }}</button>
+-      </div>
+-    </form>
+-  </div>
+-</dialog>
+-
+-<script>
+-const canvas = document.getElementById('sigCanvas');
+-const ctx = canvas.getContext('2d');
+-ctx.lineWidth = 2.4;
+-ctx.lineCap = 'round';
+-// Read the live --tt-ink CSS var (not the server-rendered {{ theme.ink.DEFAULT }})
+-// so the pen color still contrasts against the canvas after a light/dark toggle —
+-// ink is a light color in dark mode and a dark color in light mode.
+-function applyInkColor() {
+-  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--tt-ink').trim();
+-}
+-applyInkColor();
+-let drawing = false;
+-let hasDrawn = false;
+-
+-function getPos(e) {
+-  const rect = canvas.getBoundingClientRect();
+-  const scaleX = canvas.width / rect.width;
+-  const scaleY = canvas.height / rect.height;
+-  const point = e.touches ? e.touches[0] : e;
+-  return { x: (point.clientX - rect.left) * scaleX, y: (point.clientY - rect.top) * scaleY };
+-}
+-
+-function startDraw(e) {
+-  drawing = true;
+-  hasDrawn = true;
+-  const p = getPos(e);
+-  ctx.beginPath();
+-  ctx.moveTo(p.x, p.y);
+-  e.preventDefault();
+-}
+-function draw(e) {
+-  if (!drawing) return;
+-  const p = getPos(e);
+-  ctx.lineTo(p.x, p.y);
+-  ctx.stroke();
+-  e.preventDefault();
+-}
+-function stopDraw() { drawing = false; }
+-
+-canvas.addEventListener('mousedown', startDraw);
+-canvas.addEventListener('mousemove', draw);
+-canvas.addEventListener('mouseup', stopDraw);
+-canvas.addEventListener('mouseleave', stopDraw);
+-canvas.addEventListener('touchstart', startDraw);
+-canvas.addEventListener('touchmove', draw);
+-canvas.addEventListener('touchend', stopDraw);
+-
+-function clearCanvas() {
+-  ctx.clearRect(0, 0, canvas.width, canvas.height);
+-  hasDrawn = false;
+-}
+-
+-function openSignDialog(personId, name) {
+-  clearCanvas();
+-  applyInkColor();
+-  document.getElementById('signName').textContent = name;
+-  document.getElementById('signForm').action = `/session/{{ session.id }}/sign/${personId}`;
+-  signDialog.showModal();
+-}
+-
+-function submitSignature() {
+-  if (!hasDrawn) {
+-    alert('Please draw a signature first.');
+-    return;
+-  }
+-  document.getElementById('signatureData').value = canvas.toDataURL('image/png');
+-  document.getElementById('signForm').submit();
+-}
+-</script>
+-{% endblock %}
+diff --git a/training_tracker/templates/week_detail.html b/training_tracker/templates/week_detail.html
+index 711e38a..c3bfd73 100644
+--- a/training_tracker/templates/week_detail.html
++++ b/training_tracker/templates/week_detail.html
+@@ -159,7 +159,7 @@
+         </div>
+         {% endif %}
+       </div>
+-      <p class="font-mono text-[11px] text-ink-faint uppercase tracking-wide mb-3">{{ s.attended }} {{ c('session.attended_suffix') }} · {{ s.signed }} {{ c('session.signed_suffix') }}</p>
++      <p class="font-mono text-[11px] text-ink-faint uppercase tracking-wide mb-3">{{ s.attended }} {{ c('session.attended_suffix') }}</p>
+ 
+       <ul class="divide-y divide-parchment-line mb-4 max-h-64 overflow-y-auto">
+         {% for r in s.roster %}
+@@ -179,10 +179,6 @@
+         {% endfor %}
+       </ul>
+ 
+-      <a href="{{ url_for('signoff_sheet', session_id=s.row.id) }}" class="block text-center bg-amber hover:bg-amber-dark text-ink font-mono text-xs uppercase tracking-wide px-4 py-2.5 rounded-md mb-2">
+-        {{ c('session.open_signoff_btn') }}
+-      </a>
+-
+       {% if can_manage_courses %}
+       <div class="mt-3 pt-3 border-t border-parchment-line space-y-2">
+         <a href="{{ url_for('download_signoff_template', session_id=s.row.id) }}" class="block text-center border border-amber text-amber hover:bg-amber hover:text-ink font-mono text-xs uppercase tracking-wide px-4 py-2.5 rounded-md transition-colors">
+-- 
+2.43.0
+
