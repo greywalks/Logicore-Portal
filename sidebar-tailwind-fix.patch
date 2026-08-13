@@ -1,0 +1,46 @@
+From cce42dd87ba53ded641d0426d8c4fd6ad232fb26 Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.com>
+Date: Thu, 13 Aug 2026 14:34:09 +0000
+Subject: [PATCH] Fix: Users & Permissions sidebar overflowing / no wrap
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+admin_permissions.html used Tailwind utility classes (flex, gap-4, ml-auto,
+max-w-6xl, etc.) on the sidebar/topbar markup copied from index.html, but
+only loaded app.css (custom component classes) — not Tailwind itself — so
+those utilities were inert class names doing nothing, and the layout broke
+and overflowed instead of wrapping/sizing correctly. Loads the Tailwind CDN
+script now, same as training_tracker/base.html does for the same reason.
+---
+ templates/admin_permissions.html | 14 +++++++++-----
+ 1 file changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/templates/admin_permissions.html b/templates/admin_permissions.html
+index 11e805b..57dcd86 100644
+--- a/templates/admin_permissions.html
++++ b/templates/admin_permissions.html
+@@ -6,11 +6,15 @@
+   <title>Users &amp; Permissions — Logicore Portal</title>
+   <link rel="preconnect" href="https://fonts.googleapis.com" />
+   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+-  <!-- Not the full tailwind.css: this page's own content below uses plain
+-       hand-written CSS (see <style> block), not Tailwind utility classes, so
+-       it doesn't need the precompiled build — only app.css, for the shared
+-       sidebar/topbar component classes (.sidebar, .side-link, .app-shell,
+-       etc.), same as training_tracker/base.html does. -->
++  <!-- This page mixes hand-written CSS (see <style> below) with a handful of
++       Tailwind utility classes on the shared sidebar/topbar markup (copied
++       from index.html) — e.g. "flex items-center gap-4". Unlike index.html,
++       it doesn't ship those classes in a precompiled build, so it loads the
++       Tailwind CDN script instead (same fix training_tracker/base.html uses
++       for the same reason). app.css still supplies the custom component
++       classes (.sidebar, .side-link, .app-shell, etc.) that aren't Tailwind
++       utilities at all. -->
++  <script src="https://cdn.tailwindcss.com"></script>
+   <link rel="stylesheet" href="/static/css/app.css" />
+   <style>
+     .admin-wrap { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; position: relative; z-index: 10; }
+-- 
+2.43.0
+
