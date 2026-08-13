@@ -1,0 +1,1235 @@
+diff --git a/app.py b/app.py
+index 3cd6f23..80188cd 100644
+--- a/app.py
++++ b/app.py
+@@ -2,7 +2,7 @@
+ Promethean Workshop Invoice Generator — Flask Backend
+ """
+ 
+-import os, sys, shutil, queue, threading, json, uuid, webbrowser
++import os, sys, shutil, queue, threading, json, uuid, webbrowser, io
+ from pathlib import Path
+ from datetime import datetime
+ 
+@@ -12,6 +12,7 @@ from werkzeug.middleware.dispatcher import DispatcherMiddleware
+ from werkzeug.security import check_password_hash
+ 
+ import portal_auth
++import nonconforming
+ 
+ app = Flask(__name__)
+ app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
+@@ -67,6 +68,9 @@ app.secret_key = portal_auth.load_or_create_secret()
+ portal_auth.init_db()
+ app.teardown_appcontext(portal_auth.close_db)
+ 
++nonconforming.init_db()
++app.teardown_appcontext(nonconforming.close_db)
++
+ 
+ # ── Portal-wide login gate ──────────────────────────────────────────────────
+ # Every route requires a logged-in user except the handful below. Section-
+@@ -124,6 +128,15 @@ ROUTE_SECTIONS = {
+     # Config
+     "get_serial_rules": ("invoice-generator", "config"),
+     "save_serial_rules": ("invoice-generator", "config"),
++    # SMS NonConforming
++    "nc_list_items": ("sms-nonconforming", None),
++    "nc_create_item": ("sms-nonconforming", None),
++    "nc_get_item": ("sms-nonconforming", None),
++    "nc_update_item": ("sms-nonconforming", None),
++    "nc_delete_item": ("sms-nonconforming", None),
++    "nc_export": ("sms-nonconforming", None),
++    "nc_label": ("sms-nonconforming", None),
++    "nc_next_number": ("sms-nonconforming", None),
+ }
+ 
+ 
+@@ -205,12 +218,13 @@ def admin_permissions_new_user():
+         return redirect(url_for("index"))
+     username = request.form.get("username", "").strip()
+     password = request.form.get("password", "")
++    initials = request.form.get("initials", "").strip()
+     is_superadmin = request.form.get("is_superadmin") == "on"
+     if not username or not password:
+         flash("Username and password are required.", "error")
+     else:
+         try:
+-            portal_auth.create_user(username, password, is_superadmin)
++            portal_auth.create_user(username, password, is_superadmin, initials=initials)
+             flash(f"Created user {username}.", "success")
+         except Exception:
+             flash("That username is already taken.", "error")
+@@ -246,6 +260,18 @@ def admin_permissions_reset_password(user_id):
+     return redirect(url_for("admin_permissions"))
+ 
+ 
++@app.route("/admin/permissions/users/<int:user_id>/initials", methods=["POST"])
++def admin_permissions_set_initials(user_id):
++    user = portal_auth.get_current_user()
++    if not user or not user["is_superadmin"]:
++        flash("You don't have permission to do that.", "error")
++        return redirect(url_for("index"))
++    initials = request.form.get("initials", "").strip()
++    portal_auth.update_user(user_id, initials=initials)
++    flash("Initials updated.", "success")
++    return redirect(url_for("admin_permissions"))
++
++
+ @app.route("/admin/permissions/users/<int:user_id>/set", methods=["POST"])
+ def admin_permissions_set(user_id):
+     user = portal_auth.get_current_user()
+@@ -1880,6 +1906,106 @@ def set_fedex_shipment_defaults():
+         return jsonify({"ok": False, "error": str(e)}), 400
+ 
+ 
++# ══════════════════════════════════════════════════════════════════════════════
++# SMS NonConforming
++# ══════════════════════════════════════════════════════════════════════════════
++# One SQLite table (nonconforming.py) behind a small CRUD/search/export API.
++# No two-step analyze→confirm flow here — this is a live database, not a
++# file-upload builder, so every route just talks straight to nonconforming.py.
++
++@app.route("/nonconforming/api/items")
++def nc_list_items():
++    q = request.args.get("q", "").strip() or None
++    status = request.args.get("status", "").strip() or None
++    limit = min(int(request.args.get("limit", 200)), 1000)
++    offset = int(request.args.get("offset", 0))
++    items = nonconforming.list_items(q=q, status=status, limit=limit, offset=offset)
++    total = nonconforming.count_items(q=q, status=status)
++    user = portal_auth.get_current_user()
++    return jsonify({
++        "ok": True,
++        "items": items,
++        "total": total,
++        "statuses": nonconforming.distinct_statuses(),
++        "next_number_preview": nonconforming.preview_next_number(portal_auth.initials_for(user)),
++    })
++
++
++@app.route("/nonconforming/api/next_number")
++def nc_next_number():
++    user = portal_auth.get_current_user()
++    return jsonify({"ok": True, "preview": nonconforming.preview_next_number(portal_auth.initials_for(user))})
++
++
++@app.route("/nonconforming/api/items", methods=["POST"])
++def nc_create_item():
++    try:
++        user = portal_auth.get_current_user()
++        body = request.get_json(force=True)
++        item = nonconforming.add_item(body, user)
++        return jsonify({"ok": True, "item": item})
++    except ValueError as e:
++        return jsonify({"ok": False, "error": str(e)}), 400
++    except Exception as e:
++        return jsonify({"ok": False, "error": str(e)}), 400
++
++
++@app.route("/nonconforming/api/items/<int:item_id>")
++def nc_get_item(item_id):
++    item = nonconforming.get_item(item_id)
++    if not item:
++        return jsonify({"ok": False, "error": "Not found"}), 404
++    return jsonify({"ok": True, "item": item})
++
++
++@app.route("/nonconforming/api/items/<int:item_id>", methods=["PUT", "PATCH"])
++def nc_update_item(item_id):
++    try:
++        body = request.get_json(force=True)
++        item = nonconforming.update_item(item_id, body)
++        if not item:
++            return jsonify({"ok": False, "error": "Not found"}), 404
++        return jsonify({"ok": True, "item": item})
++    except ValueError as e:
++        return jsonify({"ok": False, "error": str(e)}), 400
++    except Exception as e:
++        return jsonify({"ok": False, "error": str(e)}), 400
++
++
++@app.route("/nonconforming/api/items/<int:item_id>", methods=["DELETE"])
++def nc_delete_item(item_id):
++    ok = nonconforming.delete_item(item_id)
++    if not ok:
++        return jsonify({"ok": False, "error": "Not found"}), 404
++    return jsonify({"ok": True})
++
++
++@app.route("/nonconforming/api/export")
++def nc_export():
++    q = request.args.get("q", "").strip() or None
++    status = request.args.get("status", "").strip() or None
++    rows = nonconforming.list_items(q=q, status=status, limit=100000, offset=0)
++    buf = nonconforming.export_xlsx(rows)
++    fname = f"SMS_NonConforming_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
++    return send_file(buf, as_attachment=True, download_name=fname,
++                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
++
++
++@app.route("/nonconforming/api/items/<int:item_id>/label")
++def nc_label(item_id):
++    """Returns the raw ZPL for this item's 3x4 label — the frontend either
++    hands this straight to Zebra Browser Print, or offers it as a .zpl
++    download for machines without Browser Print installed."""
++    item = nonconforming.get_item(item_id)
++    if not item:
++        return jsonify({"ok": False, "error": "Not found"}), 404
++    zpl = nonconforming.build_zpl(item)
++    if request.args.get("download") == "1":
++        buf = io.BytesIO(zpl.encode("utf-8"))
++        return send_file(buf, as_attachment=True, download_name=f"{item['number']}.zpl", mimetype="text/plain")
++    return jsonify({"ok": True, "zpl": zpl, "number": item["number"]})
++
++
+ if __name__ == "__main__":
+     url = "http://127.0.0.1:5000"
+     print("  Modules active: Workshop Invoice + Storage Invoice + Philips Warehouse Invoice + TCL Warehouse Invoice + AMC Warehouse Invoice + FedEx Shipment Upload + Training Tracker")
+diff --git a/nonconforming.py b/nonconforming.py
+new file mode 100644
+index 0000000..e67508d
+--- /dev/null
++++ b/nonconforming.py
+@@ -0,0 +1,365 @@
++"""
++SMS NonConforming — units received at the warehouse that don't conform
++(wrong item, damaged, etc.), tracked from intake through resolution.
++
++Backs the "SMS NonConforming" portal tab. Own SQLite database
++(nonconforming.db), separate from portal_auth.db and training_planner.db,
++following the same per-request-connection-on-flask.g pattern as
++portal_auth.py.
++
++Number generation: each filer gets a sequential counter per calendar year,
++keyed off their initials (portal_auth.initials_for) — e.g. the 3rd item
++Matt Shaw (MS) files in 2026 is "MS26-3". Counters live in their own table
++(`number_counters`) rather than being derived by scanning `items` for the
++highest existing suffix, so two people filing at the same moment can't both
++land on the same number — the increment happens inside one transaction.
++"""
++import io
++import sqlite3
++from pathlib import Path
++from datetime import datetime, date
++
++from flask import g
++from openpyxl import Workbook
++from openpyxl.styles import Font, Alignment, PatternFill
++from openpyxl.utils import get_column_letter
++
++BASE_DIR = Path(__file__).parent
++DB_PATH = BASE_DIR / "nonconforming.db"
++
++# Columns a caller may set directly on an item. `date_added`, `number`,
++# `filed_by_user_id`, `filed_by_username`, `created_at` are always derived
++# server-side and never taken from client input.
++EDITABLE_FIELDS = [
++    "ticket_no", "model", "serial", "ra_no", "tracking", "carrier",
++    "address", "status", "ussi_resolution", "addtl_info",
++    "origin_company", "store_no",
++]
++REQUIRED_FIELDS = ["model", "serial", "carrier"]
++
++
++# ─────────────────────────────────────────────────────────────────────────
++# DB
++# ─────────────────────────────────────────────────────────────────────────
++
++def get_db():
++    if "_nc_db" not in g:
++        db = sqlite3.connect(DB_PATH)
++        db.row_factory = sqlite3.Row
++        db.execute("PRAGMA foreign_keys = ON")
++        g._nc_db = db
++    return g._nc_db
++
++
++def close_db(exception=None):
++    db = g.pop("_nc_db", None)
++    if db is not None:
++        db.close()
++
++
++def init_db():
++    db = sqlite3.connect(DB_PATH)
++    db.execute(
++        """
++        CREATE TABLE IF NOT EXISTS items (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            date_added TEXT NOT NULL,
++            ticket_no TEXT,
++            model TEXT NOT NULL,
++            serial TEXT NOT NULL,
++            number TEXT UNIQUE NOT NULL,
++            ra_no TEXT,
++            tracking TEXT,
++            carrier TEXT NOT NULL,
++            address TEXT,
++            status TEXT,
++            ussi_resolution TEXT,
++            addtl_info TEXT,
++            origin_company TEXT,
++            store_no TEXT,
++            filed_by_user_id INTEGER,
++            filed_by_username TEXT,
++            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
++            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
++        )
++        """
++    )
++    db.execute(
++        """
++        CREATE TABLE IF NOT EXISTS number_counters (
++            initials TEXT NOT NULL,
++            year INTEGER NOT NULL,
++            count INTEGER NOT NULL DEFAULT 0,
++            PRIMARY KEY (initials, year)
++        )
++        """
++    )
++    # Helpful for the search box hitting several columns at once.
++    db.execute("CREATE INDEX IF NOT EXISTS idx_items_number ON items(number)")
++    db.execute("CREATE INDEX IF NOT EXISTS idx_items_serial ON items(serial)")
++    db.execute("CREATE INDEX IF NOT EXISTS idx_items_model ON items(model)")
++    db.commit()
++    db.close()
++
++
++# ─────────────────────────────────────────────────────────────────────────
++# Number generation
++# ─────────────────────────────────────────────────────────────────────────
++
++def generate_number(initials, year=None):
++    """Atomically bump and return this initials/year's next sequence number,
++    formatted like 'MS26-3'. BEGIN IMMEDIATE takes the write lock up front
++    so two concurrent filers under the same initials can't both read the
++    same count before either commits."""
++    initials = (initials or "XX").strip().upper()
++    year = year or date.today().year
++    yy = year % 100
++    db = get_db()
++    db.execute("BEGIN IMMEDIATE")
++    try:
++        row = db.execute(
++            "SELECT count FROM number_counters WHERE initials = ? AND year = ?",
++            (initials, year),
++        ).fetchone()
++        next_count = (row["count"] if row else 0) + 1
++        db.execute(
++            "INSERT INTO number_counters (initials, year, count) VALUES (?, ?, ?) "
++            "ON CONFLICT(initials, year) DO UPDATE SET count = excluded.count",
++            (initials, year, next_count),
++        )
++        db.commit()
++    except Exception:
++        db.rollback()
++        raise
++    return f"{initials}{yy}-{next_count}"
++
++
++def preview_next_number(initials, year=None):
++    """Read-only look at what the *next* number would be, for the form's
++    live preview — does not consume a counter slot."""
++    initials = (initials or "XX").strip().upper()
++    year = year or date.today().year
++    db = get_db()
++    row = db.execute(
++        "SELECT count FROM number_counters WHERE initials = ? AND year = ?",
++        (initials, year),
++    ).fetchone()
++    next_count = (row["count"] if row else 0) + 1
++    return f"{initials}{year % 100}-{next_count}"
++
++
++# ─────────────────────────────────────────────────────────────────────────
++# CRUD
++# ─────────────────────────────────────────────────────────────────────────
++
++def add_item(fields, user):
++    """fields: dict from the form (only EDITABLE_FIELDS are read). user:
++    portal_auth current-user row/dict — supplies initials + who-filed."""
++    import portal_auth
++
++    missing = [f for f in REQUIRED_FIELDS if not (fields.get(f) or "").strip()]
++    if missing:
++        raise ValueError(f"Missing required field(s): {', '.join(missing)}")
++
++    initials = portal_auth.initials_for(user)
++    today = date.today()
++    number = generate_number(initials, today.year)
++
++    row = {k: (fields.get(k) or "").strip() or None for k in EDITABLE_FIELDS}
++    db = get_db()
++    db.execute(
++        f"""
++        INSERT INTO items (
++            date_added, number, filed_by_user_id, filed_by_username,
++            {', '.join(EDITABLE_FIELDS)}
++        ) VALUES (?, ?, ?, ?, {', '.join('?' for _ in EDITABLE_FIELDS)})
++        """,
++        [today.isoformat(), number, user["id"], user["username"]]
++        + [row[k] for k in EDITABLE_FIELDS],
++    )
++    db.commit()
++    return get_item(db.execute("SELECT last_insert_rowid() AS id").fetchone()["id"])
++
++
++def get_item(item_id):
++    db = get_db()
++    row = db.execute("SELECT * FROM items WHERE id = ?", (item_id,)).fetchone()
++    return dict(row) if row else None
++
++
++def update_item(item_id, fields):
++    existing = get_item(item_id)
++    if not existing:
++        return None
++    updates = {k: (fields[k] or "").strip() or None for k in EDITABLE_FIELDS if k in fields}
++    if not updates:
++        return existing
++    missing = [f for f in REQUIRED_FIELDS if f in updates and not updates[f]]
++    if missing:
++        raise ValueError(f"Missing required field(s): {', '.join(missing)}")
++    set_clause = ", ".join(f"{k} = ?" for k in updates)
++    db = get_db()
++    db.execute(
++        f"UPDATE items SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
++        list(updates.values()) + [item_id],
++    )
++    db.commit()
++    return get_item(item_id)
++
++
++def delete_item(item_id):
++    db = get_db()
++    cur = db.execute("DELETE FROM items WHERE id = ?", (item_id,))
++    db.commit()
++    return cur.rowcount > 0
++
++
++SEARCHABLE_COLUMNS = [
++    "number", "ticket_no", "model", "serial", "ra_no", "tracking", "carrier",
++    "address", "status", "ussi_resolution", "addtl_info", "origin_company",
++    "store_no", "filed_by_username",
++]
++
++
++def list_items(q=None, status=None, limit=500, offset=0):
++    """q: free-text search across SEARCHABLE_COLUMNS. status: exact filter.
++    Ordered newest-first by date_added, then id, so a filer's own items
++    filed the same day stay in filing order."""
++    db = get_db()
++    where = []
++    params = []
++    if q:
++        like = f"%{q.strip()}%"
++        where.append("(" + " OR ".join(f"{c} LIKE ?" for c in SEARCHABLE_COLUMNS) + ")")
++        params.extend([like] * len(SEARCHABLE_COLUMNS))
++    if status:
++        where.append("status = ?")
++        params.append(status)
++    sql = "SELECT * FROM items"
++    if where:
++        sql += " WHERE " + " AND ".join(where)
++    sql += " ORDER BY date_added DESC, id DESC LIMIT ? OFFSET ?"
++    params.extend([limit, offset])
++    rows = db.execute(sql, params).fetchall()
++    return [dict(r) for r in rows]
++
++
++def count_items(q=None, status=None):
++    db = get_db()
++    where = []
++    params = []
++    if q:
++        like = f"%{q.strip()}%"
++        where.append("(" + " OR ".join(f"{c} LIKE ?" for c in SEARCHABLE_COLUMNS) + ")")
++        params.extend([like] * len(SEARCHABLE_COLUMNS))
++    if status:
++        where.append("status = ?")
++        params.append(status)
++    sql = "SELECT COUNT(*) c FROM items"
++    if where:
++        sql += " WHERE " + " AND ".join(where)
++    return db.execute(sql, params).fetchone()["c"]
++
++
++def distinct_statuses():
++    db = get_db()
++    rows = db.execute(
++        "SELECT DISTINCT status FROM items WHERE status IS NOT NULL AND status != '' ORDER BY status"
++    ).fetchall()
++    return [r["status"] for r in rows]
++
++
++# ─────────────────────────────────────────────────────────────────────────
++# Export
++# ─────────────────────────────────────────────────────────────────────────
++
++EXPORT_COLUMNS = [
++    ("date_added", "Date Added"),
++    ("number", "Number"),
++    ("ticket_no", "Ticket #"),
++    ("model", "Model #"),
++    ("serial", "Serial #"),
++    ("ra_no", "RA #"),
++    ("tracking", "Tracking"),
++    ("carrier", "Carrier"),
++    ("address", "Address"),
++    ("status", "Status"),
++    ("ussi_resolution", "USSI Resolution Confirmation"),
++    ("addtl_info", "Addtl Info"),
++    ("origin_company", "Origin Company"),
++    ("store_no", "Store #"),
++    ("filed_by_username", "Filed By"),
++]
++
++
++def export_xlsx(rows):
++    """rows: list of item dicts (as returned by list_items). Returns a
++    BytesIO of the finished workbook, ready for send_file()."""
++    wb = Workbook()
++    ws = wb.active
++    ws.title = "NonConforming"
++
++    header_font = Font(bold=True, color="FFFFFF", size=10)
++    header_fill = PatternFill("solid", fgColor="2F3B4C")
++    cell_font = Font(size=10)
++
++    for col_idx, (_, label) in enumerate(EXPORT_COLUMNS, start=1):
++        cell = ws.cell(row=1, column=col_idx, value=label)
++        cell.font = header_font
++        cell.fill = header_fill
++        cell.alignment = Alignment(horizontal="center", vertical="center")
++
++    for r_idx, item in enumerate(rows, start=2):
++        for c_idx, (key, _) in enumerate(EXPORT_COLUMNS, start=1):
++            cell = ws.cell(row=r_idx, column=c_idx, value=item.get(key) or "")
++            cell.font = cell_font
++
++    for col_idx, (key, label) in enumerate(EXPORT_COLUMNS, start=1):
++        width = max(len(label), 12)
++        if key in ("address", "addtl_info"):
++            width = 38
++        ws.column_dimensions[get_column_letter(col_idx)].width = width
++
++    ws.freeze_panes = "A2"
++
++    buf = io.BytesIO()
++    wb.save(buf)
++    buf.seek(0)
++    return buf
++
++
++# ─────────────────────────────────────────────────────────────────────────
++# Zebra label (ZPL) — 3" x 4" @ 203dpi (609 x 812 dots)
++# ─────────────────────────────────────────────────────────────────────────
++
++def build_zpl(item):
++    """A simple 3x4 label: big Number (also as a barcode), Model, Serial.
++    Kept deliberately plain — easy to hand-tune in Zebra's ZPL if the exact
++    layout needs to change later."""
++    number = item.get("number") or ""
++    model = item.get("model") or ""
++    serial = item.get("serial") or ""
++    ticket = item.get("ticket_no") or ""
++
++    zpl = f"""^XA
++^PW609
++^LL812
++^CF0,60
++^FO40,40^FDSMS NonConforming^FS
++^FO40,110^GB529,4,4^FS
++^CF0,110
++^FO40,150^FD{number}^FS
++^BY3,3,120
++^FO40,280^BCN,120,Y,N,N^FD{number}^FS
++^CF0,40
++^FO40,440^FDModel:^FS
++^CF0,36
++^FO40,480^FD{model}^FS
++^CF0,40
++^FO40,540^FDSerial:^FS
++^CF0,36
++^FO40,580^FD{serial}^FS
++^CF0,30
++^FO40,650^FDTicket #: {ticket}^FS
++^XZ"""
++    return zpl
+diff --git a/portal_auth.py b/portal_auth.py
+index ecab056..92e6b98 100644
+--- a/portal_auth.py
++++ b/portal_auth.py
+@@ -121,6 +121,13 @@ def init_db():
+         """
+     )
+     db.commit()
++    # Migration: `initials` was added after the users table already shipped
++    # (used by SMS NonConforming to build the "Number" field, e.g. MS26-1).
++    # ALTER TABLE ADD COLUMN has no "IF NOT EXISTS" in SQLite, so probe first.
++    existing_cols = {row[1] for row in db.execute("PRAGMA table_info(users)")}
++    if "initials" not in existing_cols:
++        db.execute("ALTER TABLE users ADD COLUMN initials TEXT")
++        db.commit()
+     # BEGIN IMMEDIATE + COUNT-check guards against a duplicate-insert race if
+     # two workers boot at once (same pattern training_tracker's init_db used
+     # for its own default admin, before that table existed here).
+@@ -322,11 +329,12 @@ def clear_permission(user_id, section, subsection=None):
+     db.commit()
+ 
+ 
+-def create_user(username, password, is_superadmin=False):
++def create_user(username, password, is_superadmin=False, initials=None):
+     db = get_db()
+     db.execute(
+-        "INSERT INTO users (username, password_hash, is_superadmin) VALUES (?, ?, ?)",
+-        (username, generate_password_hash(password), 1 if is_superadmin else 0),
++        "INSERT INTO users (username, password_hash, is_superadmin, initials) VALUES (?, ?, ?, ?)",
++        (username, generate_password_hash(password), 1 if is_superadmin else 0,
++         (initials or "").strip().upper() or None),
+     )
+     db.commit()
+ 
+@@ -337,7 +345,7 @@ def delete_user(user_id):
+     db.commit()
+ 
+ 
+-def update_user(user_id, password=None, is_superadmin=None):
++def update_user(user_id, password=None, is_superadmin=None, initials=None):
+     db = get_db()
+     if password:
+         db.execute(
+@@ -349,4 +357,26 @@ def update_user(user_id, password=None, is_superadmin=None):
+             "UPDATE users SET is_superadmin = ? WHERE id = ?",
+             (1 if is_superadmin else 0, user_id),
+         )
++    if initials is not None:
++        db.execute(
++            "UPDATE users SET initials = ? WHERE id = ?",
++            (initials.strip().upper() or None, user_id),
++        )
+     db.commit()
++
++
++def initials_for(user):
++    """Best-effort initials for a user — explicit `initials` column first,
++    falling back to a derivation from the username so SMS NonConforming
++    always has *something* to build a Number from even before an admin has
++    set it explicitly. Used only as a fallback; admins should set it."""
++    if not user:
++        return "XX"
++    explicit = (user.get("initials") or "").strip().upper() if isinstance(user, dict) else (user["initials"] or "").strip().upper()
++    if explicit:
++        return explicit
++    username = user["username"] if not isinstance(user, dict) else user.get("username", "")
++    parts = [p for p in username.replace(".", " ").replace("_", " ").replace("-", " ").split() if p]
++    if len(parts) >= 2:
++        return (parts[0][0] + parts[1][0]).upper()
++    return (username[:2] or "XX").upper()
+diff --git a/static/js/nonconforming.js b/static/js/nonconforming.js
+new file mode 100644
+index 0000000..8b11eeb
+--- /dev/null
++++ b/static/js/nonconforming.js
+@@ -0,0 +1,360 @@
++// SMS NonConforming — frontend logic. Talks to /nonconforming/api/*.
++// Loaded after app.js (both `defer`, so DOM order = execution order).
++(function () {
++  const PAGE_SIZE = 50;
++
++  const state = {
++    q: "",
++    status: "",
++    offset: 0,
++    total: 0,
++    editingId: null,
++    labelItem: null,
++  };
++
++  const FIELD_LABELS = {
++    ticket_no: "Ticket #",
++    model: "Model #",
++    serial: "Serial #",
++    ra_no: "RA #",
++    tracking: "Tracking",
++    carrier: "Carrier",
++    address: "Address",
++    status: "Status",
++    ussi_resolution: "USSI Resolution Confirmation",
++    addtl_info: "Addtl Info",
++    origin_company: "Origin Company",
++    store_no: "Store #",
++  };
++  const REQUIRED = ["model", "serial", "carrier"];
++
++  function $(id) { return document.getElementById(id); }
++
++  function escapeHtml(s) {
++    if (s === null || s === undefined) return "";
++    return String(s).replace(/[&<>"']/g, c => ({
++      "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
++    }[c]));
++  }
++
++  // ── Load / render table ───────────────────────────────────────────────
++  async function loadItems() {
++    const params = new URLSearchParams({
++      limit: PAGE_SIZE, offset: state.offset,
++    });
++    if (state.q) params.set("q", state.q);
++    if (state.status) params.set("status", state.status);
++    let data;
++    try {
++      const res = await fetch(`/nonconforming/api/items?${params}`);
++      data = await res.json();
++    } catch (e) {
++      return;
++    }
++    if (!data.ok) return;
++    state.total = data.total;
++    renderTable(data.items);
++    renderStatusOptions(data.statuses);
++    const preview = $("nc-next-number");
++    if (preview) preview.textContent = data.next_number_preview || "—";
++    updatePager();
++  }
++
++  function renderTable(items) {
++    const body = $("nc-table-body");
++    const empty = $("nc-empty");
++    if (!body) return;
++    if (!items.length) {
++      body.innerHTML = "";
++      empty.classList.remove("hidden");
++      return;
++    }
++    empty.classList.add("hidden");
++    body.innerHTML = items.map(it => `
++      <tr class="border-b border-steel/10 hover:bg-ink-100/50 transition-colors">
++        <td class="py-2 pr-3 font-mono text-accent">${escapeHtml(it.number)}</td>
++        <td class="py-2 pr-3">${escapeHtml(it.date_added)}</td>
++        <td class="py-2 pr-3">${escapeHtml(it.model)}</td>
++        <td class="py-2 pr-3">${escapeHtml(it.serial)}</td>
++        <td class="py-2 pr-3">${escapeHtml(it.ticket_no)}</td>
++        <td class="py-2 pr-3">${escapeHtml(it.carrier)}</td>
++        <td class="py-2 pr-3">${escapeHtml(it.status)}</td>
++        <td class="py-2 pr-3">${escapeHtml(it.filed_by_username)}</td>
++        <td class="py-2 pr-3 whitespace-nowrap">
++          <button class="text-steel hover:text-accent transition-colors mr-2" data-action="label" data-id="${it.id}">Label</button>
++          <button class="text-steel hover:text-accent transition-colors" data-action="edit" data-id="${it.id}">Edit</button>
++        </td>
++      </tr>
++    `).join("");
++  }
++
++  function renderStatusOptions(statuses) {
++    const sel = $("nc-status-filter");
++    if (!sel) return;
++    const current = sel.value;
++    sel.innerHTML = '<option value="">All statuses</option>' +
++      statuses.map(s => `<option value="${escapeHtml(s)}">${escapeHtml(s)}</option>`).join("");
++    sel.value = current;
++    const list = $("nc-status-list");
++    if (list) list.innerHTML = statuses.map(s => `<option value="${escapeHtml(s)}"></option>`).join("");
++  }
++
++  function updatePager() {
++    const count = $("nc-count");
++    if (count) {
++      const from = state.total === 0 ? 0 : state.offset + 1;
++      const to = Math.min(state.offset + PAGE_SIZE, state.total);
++      count.textContent = `${from}–${to} of ${state.total}`;
++    }
++    const prev = $("nc-prev"), next = $("nc-next");
++    if (prev) prev.disabled = state.offset === 0;
++    if (next) next.disabled = state.offset + PAGE_SIZE >= state.total;
++  }
++
++  // ── Add item ─────────────────────────────────────────────────────────
++  function bindAddForm() {
++    const form = $("nc-add-form");
++    if (!form) return;
++    form.addEventListener("submit", async e => {
++      e.preventDefault();
++      const errBox = $("nc-add-error");
++      const btn = $("nc-add-btn");
++      const statusEl = $("nc-add-status");
++      errBox.classList.add("hidden");
++      const fd = new FormData(form);
++      const payload = {};
++      for (const [k, v] of fd.entries()) payload[k] = v;
++      btn.disabled = true;
++      statusEl.textContent = "Filing…";
++      try {
++        const res = await fetch("/nonconforming/api/items", {
++          method: "POST",
++          headers: { "Content-Type": "application/json" },
++          body: JSON.stringify(payload),
++        });
++        const data = await res.json();
++        if (!data.ok) {
++          errBox.textContent = data.error || "Could not file item.";
++          errBox.classList.remove("hidden");
++          statusEl.textContent = "";
++        } else {
++          form.reset();
++          statusEl.textContent = `Filed as ${data.item.number}`;
++          setTimeout(() => { statusEl.textContent = ""; }, 4000);
++          state.offset = 0;
++          loadItems();
++        }
++      } catch (e) {
++        errBox.textContent = "Network error — item was not saved.";
++        errBox.classList.remove("hidden");
++        statusEl.textContent = "";
++      } finally {
++        btn.disabled = false;
++      }
++    });
++  }
++
++  // ── Search / filter / pagination ────────────────────────────────────
++  function bindSearch() {
++    let t;
++    const search = $("nc-search");
++    if (search) search.addEventListener("input", () => {
++      clearTimeout(t);
++      t = setTimeout(() => { state.q = search.value; state.offset = 0; loadItems(); }, 250);
++    });
++    const statusFilter = $("nc-status-filter");
++    if (statusFilter) statusFilter.addEventListener("change", () => {
++      state.status = statusFilter.value; state.offset = 0; loadItems();
++    });
++    const prev = $("nc-prev");
++    if (prev) prev.addEventListener("click", () => {
++      state.offset = Math.max(0, state.offset - PAGE_SIZE); loadItems();
++    });
++    const next = $("nc-next");
++    if (next) next.addEventListener("click", () => {
++      if (state.offset + PAGE_SIZE < state.total) { state.offset += PAGE_SIZE; loadItems(); }
++    });
++  }
++
++  // ── Export ───────────────────────────────────────────────────────────
++  function bindExport() {
++    const btn = $("nc-export-btn");
++    if (!btn) return;
++    btn.addEventListener("click", () => {
++      const params = new URLSearchParams();
++      if (state.q) params.set("q", state.q);
++      if (state.status) params.set("status", state.status);
++      window.location.href = `/nonconforming/api/export?${params}`;
++    });
++  }
++
++  // ── Row action delegation (edit / label buttons) ────────────────────
++  function bindTableActions() {
++    const body = $("nc-table-body");
++    if (!body) return;
++    body.addEventListener("click", e => {
++      const btn = e.target.closest("button[data-action]");
++      if (!btn) return;
++      const id = btn.dataset.id;
++      if (btn.dataset.action === "edit") openEditModal(id);
++      if (btn.dataset.action === "label") openLabelModal(id);
++    });
++  }
++
++  // ── Edit modal ───────────────────────────────────────────────────────
++  async function openEditModal(id) {
++    const res = await fetch(`/nonconforming/api/items/${id}`);
++    const data = await res.json();
++    if (!data.ok) return;
++    state.editingId = id;
++    const item = data.item;
++    $("nc-edit-number").textContent = item.number;
++    const form = $("nc-edit-form");
++    form.innerHTML = Object.keys(FIELD_LABELS).map(key => `
++      <div class="${key === "address" || key === "addtl_info" ? "md:col-span-2" : ""}">
++        <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">
++          ${FIELD_LABELS[key]}${REQUIRED.includes(key) ? ' <span class="text-warn">*</span>' : ""}
++        </label>
++        <input type="text" name="${key}" value="${escapeHtml(item[key])}"
++          class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++      </div>
++    `).join("");
++    $("nc-edit-error").classList.add("hidden");
++    $("nc-edit-modal").classList.remove("hidden");
++  }
++
++  function closeEditModal() {
++    $("nc-edit-modal").classList.add("hidden");
++    state.editingId = null;
++  }
++
++  function bindEditModal() {
++    const closeBtn = $("nc-edit-close");
++    if (closeBtn) closeBtn.addEventListener("click", closeEditModal);
++    const modal = $("nc-edit-modal");
++    if (modal) modal.addEventListener("click", e => { if (e.target === modal) closeEditModal(); });
++
++    const saveBtn = $("nc-edit-save");
++    if (saveBtn) saveBtn.addEventListener("click", async () => {
++      const form = $("nc-edit-form");
++      const fd = new FormData(form);
++      const payload = {};
++      for (const [k, v] of fd.entries()) payload[k] = v;
++      const errBox = $("nc-edit-error");
++      try {
++        const res = await fetch(`/nonconforming/api/items/${state.editingId}`, {
++          method: "PUT",
++          headers: { "Content-Type": "application/json" },
++          body: JSON.stringify(payload),
++        });
++        const data = await res.json();
++        if (!data.ok) {
++          errBox.textContent = data.error || "Could not save.";
++          errBox.classList.remove("hidden");
++          return;
++        }
++        closeEditModal();
++        loadItems();
++      } catch (e) {
++        errBox.textContent = "Network error — changes were not saved.";
++        errBox.classList.remove("hidden");
++      }
++    });
++
++    const deleteBtn = $("nc-edit-delete");
++    if (deleteBtn) deleteBtn.addEventListener("click", async () => {
++      if (!state.editingId) return;
++      if (!confirm("Delete this record? This can't be undone.")) return;
++      await fetch(`/nonconforming/api/items/${state.editingId}`, { method: "DELETE" });
++      closeEditModal();
++      loadItems();
++    });
++  }
++
++  // ── Label print (Zebra Browser Print) ───────────────────────────────
++  async function openLabelModal(id) {
++    const res = await fetch(`/nonconforming/api/items/${id}/label`);
++    const data = await res.json();
++    if (!data.ok) return;
++    state.labelItem = { id, zpl: data.zpl, number: data.number };
++    $("nc-label-number").textContent = data.number;
++    $("nc-label-status").textContent = window.BrowserPrint
++      ? "Zebra Browser Print detected."
++      : "Zebra Browser Print not detected on this machine — download the .zpl file instead and print it from Zebra's own utility.";
++    $("nc-label-download").href = `/nonconforming/api/items/${id}/label?download=1`;
++    $("nc-label-modal").classList.remove("hidden");
++  }
++
++  function closeLabelModal() {
++    $("nc-label-modal").classList.add("hidden");
++    state.labelItem = null;
++  }
++
++  function bindLabelModal() {
++    const closeBtn = $("nc-label-close");
++    if (closeBtn) closeBtn.addEventListener("click", closeLabelModal);
++    const modal = $("nc-label-modal");
++    if (modal) modal.addEventListener("click", e => { if (e.target === modal) closeLabelModal(); });
++
++    const printBtn = $("nc-label-print");
++    if (printBtn) printBtn.addEventListener("click", () => {
++      const statusEl = $("nc-label-status");
++      if (!state.labelItem) return;
++      if (!window.BrowserPrint) {
++        statusEl.textContent = "Zebra Browser Print isn't running on this machine. Use the Download .zpl link and print it from Zebra's utility, or install Browser Print from Zebra's site.";
++        return;
++      }
++      // Standard Zebra Browser Print JS SDK flow: grab the default printer,
++      // send raw ZPL to it. See https://www.zebra.com/us/en/products/software/barcode-printers/link-os/browser-print.html
++      window.BrowserPrint.getDefaultDevice("printer", device => {
++        if (!device) {
++          statusEl.textContent = "No default Zebra printer found in Browser Print.";
++          return;
++        }
++        device.send(state.labelItem.zpl, () => {
++          statusEl.textContent = `Sent ${state.labelItem.number} to ${device.name}.`;
++        }, err => {
++          statusEl.textContent = "Print failed: " + err;
++        });
++      }, err => {
++        statusEl.textContent = "Could not reach Browser Print: " + err;
++      });
++    });
++  }
++
++  function refreshFilerBadge() {
++    const badge = $("nc-filer-badge");
++    if (badge && window.NC_USER && window.NC_USER.username) {
++      badge.textContent = window.NC_USER.username;
++    }
++  }
++
++  function init() {
++    if (!$("nc-add-form")) return; // section not present for this user
++    refreshFilerBadge();
++    bindAddForm();
++    bindSearch();
++    bindExport();
++    bindTableActions();
++    bindEditModal();
++    bindLabelModal();
++    loadItems();
++  }
++
++  // Reload whenever the SMS NonConforming tab becomes active (in case
++  // another tab/user changed data in the meantime), without refetching on
++  // every unrelated portal-tab switch.
++  function wrapShowPortalPage() {
++    const prev = window.showPortalPage;
++    if (typeof prev !== "function") return;
++    window.showPortalPage = function (portal) {
++      prev(portal);
++      if (portal === "sms-nonconforming") loadItems();
++    };
++  }
++
++  window.addEventListener("DOMContentLoaded", () => {
++    init();
++    wrapShowPortalPage();
++  });
++})();
+diff --git a/templates/admin_permissions.html b/templates/admin_permissions.html
+index 57dcd86..223d19a 100644
+--- a/templates/admin_permissions.html
++++ b/templates/admin_permissions.html
+@@ -159,6 +159,10 @@
+             <label>Password</label>
+             <input type="password" name="password" required>
+           </div>
++          <div>
++            <label>Initials <span style="text-transform:none;">(for SMS NonConforming, e.g. MS)</span></label>
++            <input type="text" name="initials" maxlength="4" style="text-transform:uppercase;">
++          </div>
+         </div>
+         <div class="checkline" style="margin-top:0.75rem;">
+           <input type="checkbox" id="new-superadmin" name="is_superadmin">
+@@ -175,6 +179,10 @@
+       <div class="user-head">
+         <div class="user-name">{{ u.username }}{% if u.is_superadmin %}<span class="badge">Superadmin</span>{% endif %}</div>
+         <div class="actions-row" style="margin-top:0;">
++          <form class="inline-form" method="POST" action="{{ url_for('admin_permissions_set_initials', user_id=u.id) }}">
++            <input type="text" name="initials" placeholder="Initials" maxlength="4" value="{{ u.initials or '' }}" style="width:90px; text-transform:uppercase;">
++            <button type="submit" class="btn btn-ghost">Save initials</button>
++          </form>
+           <form class="inline-form" method="POST" action="{{ url_for('admin_permissions_reset_password', user_id=u.id) }}">
+             <input type="password" name="password" placeholder="New password">
+             <button type="submit" class="btn btn-ghost">Reset password</button>
+diff --git a/templates/index.html b/templates/index.html
+index 5365bbb..e626681 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -1472,12 +1472,188 @@
+ </div><!-- /portal-content-invoice-generator -->
+ 
+ <!-- ══════════════════════════════════════════════════════════
+-     PORTAL TAB: SMS NONCONFORMING (placeholder)
++     PORTAL TAB: SMS NONCONFORMING
+ ══════════════════════════════════════════════════════════ -->
+-<div id="portal-content-sms-nonconforming" class="relative z-10 max-w-3xl mx-auto px-6 py-24 text-center{% if default_portal!='sms-nonconforming' %} hidden{% endif %}">
+-  <div class="w-14 h-14 rounded-xl bg-ink-100 border border-steel/30 flex items-center justify-center mx-auto mb-5 text-2xl">🛠</div>
+-  <h1 class="text-2xl font-semibold text-slate-100 tracking-tight mb-2">SMS NonConforming</h1>
+-  <p class="text-steel text-sm max-w-md mx-auto">Not built yet — this tab is reserved for the next module in the portal.</p>
++<div id="portal-content-sms-nonconforming" class="relative z-10 max-w-6xl mx-auto px-6 py-10{% if default_portal!='sms-nonconforming' %} hidden{% endif %}">
++
++  <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
++    <div>
++      <h1 class="text-2xl font-semibold text-slate-100 tracking-tight">SMS NonConforming</h1>
++      <p class="text-steel text-sm mt-1">Units received at the warehouse that don't conform — logged, searchable, exportable.</p>
++    </div>
++    <div class="flex items-center gap-3">
++      <span class="font-mono text-xs text-steel">Filing as</span>
++      <span class="font-mono text-xs bg-ink-100 border border-steel/40 rounded px-2 py-1 text-accent" id="nc-filer-badge">—</span>
++    </div>
++  </div>
++
++  <!-- Add item -->
++  <div class="bg-ink-50 border border-steel/30 rounded-lg p-6 mb-8">
++    <div class="flex items-center gap-3 mb-4">
++      <span class="font-mono text-xs text-accent uppercase tracking-widest">New Item</span>
++      <div class="flex-1 h-px bg-steel/40"></div>
++      <span class="font-mono text-xs text-steel">Will be filed as <span class="text-accent" id="nc-next-number">—</span></span>
++    </div>
++
++    <form id="nc-add-form">
++      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Model # <span class="text-warn">*</span></label>
++          <input type="text" name="model" required placeholder="Scan or type"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Serial # <span class="text-warn">*</span></label>
++          <input type="text" name="serial" required placeholder="Scan from back of unit"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Carrier <span class="text-warn">*</span></label>
++          <input type="text" name="carrier" required list="nc-carrier-list" placeholder="e.g. Pilot, AIT, FedEx"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++          <datalist id="nc-carrier-list"></datalist>
++        </div>
++
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Ticket #</label>
++          <input type="text" name="ticket_no" placeholder="From box / paperwork"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">RA #</label>
++          <input type="text" name="ra_no" placeholder="From box / paperwork"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Tracking</label>
++          <input type="text" name="tracking" placeholder="From box / paperwork"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++
++        <div class="md:col-span-2">
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Address</label>
++          <input type="text" name="address" placeholder="From box / paperwork"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Store #</label>
++          <input type="text" name="store_no" placeholder="If on paperwork"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Origin Company</label>
++          <input type="text" name="origin_company" placeholder="Where the TV came from"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Status</label>
++          <input type="text" name="status" list="nc-status-list" placeholder="e.g. Received"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++          <datalist id="nc-status-list"></datalist>
++        </div>
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">USSI Resolution Confirmation</label>
++          <input type="text" name="ussi_resolution" placeholder="TBD"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++
++        <div class="md:col-span-3">
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Addtl Info</label>
++          <input type="text" name="addtl_info" placeholder="Short note"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++      </div>
++
++      <div id="nc-add-error" class="hidden mt-4 text-xs text-rose-400 font-mono"></div>
++
++      <div class="mt-5 flex items-center gap-3">
++        <button type="submit" id="nc-add-btn"
++          class="bg-accent text-ink font-semibold py-2.5 px-6 rounded-lg text-sm hover:bg-accent-dim transition-all">
++          File Item →
++        </button>
++        <span class="text-xs text-steel font-mono" id="nc-add-status"></span>
++      </div>
++    </form>
++  </div>
++
++  <!-- Records -->
++  <div class="bg-ink-50 border border-steel/30 rounded-lg p-6">
++    <div class="flex items-center gap-3 mb-4 flex-wrap">
++      <span class="font-mono text-xs text-accent uppercase tracking-widest">Records</span>
++      <div class="flex-1 h-px bg-steel/40 min-w-[20px]"></div>
++      <input type="text" id="nc-search" placeholder="Search number, model, serial, ticket, address…"
++        class="bg-ink-100 border border-steel/50 rounded-lg px-3 py-2 text-sm text-slate-200 w-72 max-w-full" />
++      <select id="nc-status-filter" class="bg-ink-100 border border-steel/50 rounded-lg px-3 py-2 text-sm text-slate-200">
++        <option value="">All statuses</option>
++      </select>
++      <button id="nc-export-btn" class="text-xs font-mono text-steel border border-steel/40 rounded px-3 py-2 hover:text-accent hover:border-accent transition-colors">
++        Export ⭳
++      </button>
++    </div>
++
++    <div class="overflow-x-auto">
++      <table class="w-full text-xs" id="nc-table">
++        <thead>
++          <tr class="text-left text-steel font-mono uppercase tracking-wide border-b border-steel/30">
++            <th class="py-2 pr-3">Number</th>
++            <th class="py-2 pr-3">Date</th>
++            <th class="py-2 pr-3">Model</th>
++            <th class="py-2 pr-3">Serial</th>
++            <th class="py-2 pr-3">Ticket #</th>
++            <th class="py-2 pr-3">Carrier</th>
++            <th class="py-2 pr-3">Status</th>
++            <th class="py-2 pr-3">Filed By</th>
++            <th class="py-2 pr-3"></th>
++          </tr>
++        </thead>
++        <tbody id="nc-table-body" class="text-slate-300">
++        </tbody>
++      </table>
++      <div id="nc-empty" class="hidden text-center py-10 text-steel text-sm">No records match.</div>
++    </div>
++
++    <div class="flex items-center justify-between mt-4 text-xs text-steel font-mono">
++      <span id="nc-count"></span>
++      <div class="flex items-center gap-2">
++        <button id="nc-prev" class="border border-steel/40 rounded px-3 py-1.5 hover:text-accent hover:border-accent transition-colors disabled:opacity-30">← Prev</button>
++        <button id="nc-next" class="border border-steel/40 rounded px-3 py-1.5 hover:text-accent hover:border-accent transition-colors disabled:opacity-30">Next →</button>
++      </div>
++    </div>
++  </div>
++
++</div>
++
++<!-- Edit item modal -->
++<div id="nc-edit-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background: rgba(0,0,0,.6);">
++  <div class="bg-ink-50 border border-steel/40 rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
++    <div class="flex items-center justify-between mb-4">
++      <h2 class="text-lg font-semibold text-slate-100">Edit <span id="nc-edit-number" class="text-accent"></span></h2>
++      <button id="nc-edit-close" class="text-steel hover:text-accent text-xl leading-none">&times;</button>
++    </div>
++    <form id="nc-edit-form" class="grid grid-cols-1 md:grid-cols-2 gap-4"></form>
++    <div id="nc-edit-error" class="hidden mt-3 text-xs text-rose-400 font-mono"></div>
++    <div class="mt-5 flex items-center gap-3">
++      <button id="nc-edit-save" class="bg-accent text-ink font-semibold py-2 px-5 rounded-lg text-sm hover:bg-accent-dim transition-all">Save</button>
++      <button id="nc-edit-delete" class="text-xs font-mono text-rose-400 border border-rose-400/40 rounded px-3 py-2 hover:bg-rose-400/10 transition-colors ml-auto">Delete Record</button>
++    </div>
++  </div>
++</div>
++
++<!-- Print label modal -->
++<div id="nc-label-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background: rgba(0,0,0,.6);">
++  <div class="bg-ink-50 border border-steel/40 rounded-lg p-6 w-full max-w-md">
++    <div class="flex items-center justify-between mb-4">
++      <h2 class="text-lg font-semibold text-slate-100">Print Label — <span id="nc-label-number" class="text-accent"></span></h2>
++      <button id="nc-label-close" class="text-steel hover:text-accent text-xl leading-none">&times;</button>
++    </div>
++    <p class="text-steel text-xs mb-4">3" x 4" label via Zebra Browser Print (must be installed and running on this machine).</p>
++    <div id="nc-label-status" class="text-xs font-mono text-steel mb-4"></div>
++    <div class="flex items-center gap-3">
++      <button id="nc-label-print" class="bg-accent text-ink font-semibold py-2 px-5 rounded-lg text-sm hover:bg-accent-dim transition-all">Print</button>
++      <a id="nc-label-download" class="text-xs font-mono text-steel border border-steel/40 rounded px-3 py-2 hover:text-accent hover:border-accent transition-colors" href="#">Download .zpl</a>
++    </div>
++  </div>
+ </div>
+ 
+ <!-- ══════════════════════════════════════════════════════════
+@@ -1546,6 +1722,15 @@
+ </div>
+ 
+ 
++<script>
++  window.NC_USER = { username: {{ (auth_user.username if auth_user else '')|tojson }} };
++</script>
++<!-- Zebra Browser Print SDK — download "BrowserPrint-3.x.min.js" from Zebra's
++     own site (https://www.zebra.com → Browser Print) and drop it in
++     static/js/, then uncomment this line. Without it, label printing falls
++     back to a downloadable .zpl file. -->
++<!-- <script src="/static/js/BrowserPrint-3.1.250.min.js"></script> -->
+ <script src="/static/js/app.js" defer></script>
++<script src="/static/js/nonconforming.js" defer></script>
+ </body>
+ </html>
