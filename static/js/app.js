@@ -1680,6 +1680,14 @@ document.addEventListener('keydown', e => { if(e.key==='Escape') hideAbout(); })
   const portalCrumbMap = { 'invoice-generator': 'Promethean', 'sms-nonconforming': 'SMS NonConforming', 'tbd2': 'TBD 2' };
 
   window.showPortalPage = function(portal) {
+    // If the SPA content divs for this portal tab don't exist on the current
+    // page (e.g. this was called from the Training Tracker's sidebar, which
+    // shares this markup/JS but isn't part of index.html's hidden-div SPA),
+    // do a real navigation back to the portal root instead of no-op'ing.
+    if (!document.getElementById('portal-content-' + portal)) {
+      window.location.href = '/?portal=' + portal;
+      return;
+    }
     allPortals.forEach(p => {
       const navBtn  = document.getElementById('portal-nav-' + p);
       const body    = document.getElementById('portal-body-' + p);     // sidebar sub-nav (invoice-generator only)
@@ -1700,5 +1708,14 @@ document.addEventListener('keydown', e => { if(e.key==='Escape') hideAbout(); })
     closeSidebarMobile();
   };
 
-  window.addEventListener('DOMContentLoaded', () => setCrumb('Promethean', 'Workshop Invoice'));
+  window.addEventListener('DOMContentLoaded', () => {
+    // Arriving here via a sidebar link from Training Tracker (?portal=<n>)?
+    // Restore that tab instead of the default Promethean/Workshop Invoice view.
+    const requestedPortal = new URLSearchParams(window.location.search).get('portal');
+    if (requestedPortal && document.getElementById('portal-content-' + requestedPortal)) {
+      showPortalPage(requestedPortal);
+    } else {
+      setCrumb('Promethean', 'Workshop Invoice');
+    }
+  });
 })();
