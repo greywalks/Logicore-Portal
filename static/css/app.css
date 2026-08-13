@@ -314,12 +314,6 @@ footer { border-top: 1px solid var(--border); margin-top: 40px; }
   .page-content { padding: 28px 16px 48px; }
 }
 
-/* Splash screen */
-@keyframes splashPulse { 0%,100%{opacity:.6} 50%{opacity:1} }
-@keyframes dot { from{opacity:.25;transform:translateY(0)} to{opacity:1;transform:translateY(-4px)} }
-#splash { transition: opacity .6s ease, visibility .6s ease; }
-#splash.splash-out { opacity:0; visibility:hidden; pointer-events:none; }
-
 /* Mobile sidebar trigger (hidden on desktop) */
 .sidebar-trigger { display: none; }
 @media (max-width: 900px) {
