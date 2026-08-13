@@ -11,8 +11,9 @@ services:
         value: 3.11.9
       - key: FLASK_SECRET_KEY
         generateValue: true
-    # No persistent disk attached — uploads/, outputs/, and any admin-edited
-    # config JSON (storage_prices.json, amc_prices.json, etc.) live on
-    # ephemeral storage and reset on every deploy/restart. See
-    # PROJECT_BRIEF.md "Deploying to Render" for what that does and doesn't
-    # affect, and how to add a paid persistent Disk if it becomes a problem.
+    # No persistent disk attached — uploads/, outputs/, any admin-edited
+    # config JSON (storage_prices.json, amc_prices.json, etc.), and Training
+    # Tracker's own training_planner.db / .secret_key all live on ephemeral
+    # storage and reset on every deploy/restart. See PROJECT_BRIEF.md
+    # "Deploying to Render" for what that does and doesn't affect, and how
+    # to add a paid persistent Disk if it becomes a problem.

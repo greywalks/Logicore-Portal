@@ -566,13 +566,25 @@ def init_db():
     db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
     migrate_to_sessions(db)
-    existing_users = db.execute("SELECT COUNT(*) c FROM users").fetchone()[0]
-    if existing_users == 0:
-        db.execute(
-            "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-            ("admin", generate_password_hash("admin"), "admin"),
-        )
-    db.commit()
+    # BEGIN IMMEDIATE takes SQLite's write lock right away, not lazily on
+    # first write — so if two worker processes race in here at startup
+    # (gunicorn --workers N, each importing this module and calling
+    # init_db() independently, all at once), the second one blocks until
+    # the first's transaction commits. Its COUNT(*) then correctly sees the
+    # row the first worker just inserted and skips seeding, instead of both
+    # reading 0 and crashing on the users.username UNIQUE constraint.
+    db.execute("BEGIN IMMEDIATE")
+    try:
+        existing_users = db.execute("SELECT COUNT(*) c FROM users").fetchone()[0]
+        if existing_users == 0:
+            db.execute(
+                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                ("admin", generate_password_hash("admin"), "admin"),
+            )
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
     db.close()
 
 

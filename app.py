@@ -52,13 +52,22 @@ app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {
 # SESSION_SECRET_FILE persists a signed-cookie secret across restarts so a
 # browser's session id — and therefore its in-progress analysis — survives
 # the app being relaunched (as opposed to `app.secret_key = os.urandom(...)`,
-# which would invalidate every open session on every restart).
+# which would invalidate every open session on every restart). On a host
+# with an ephemeral filesystem (Render's free tier, etc.) this file doesn't
+# survive a restart/redeploy either — set a FLASK_SECRET_KEY environment
+# variable there instead and it's preferred over the file automatically.
 SESSION_SECRET_FILE = Path(__file__).parent / ".flask_secret"
-if SESSION_SECRET_FILE.exists():
+_env_secret = os.environ.get("FLASK_SECRET_KEY")
+if _env_secret:
+    app.secret_key = _env_secret
+elif SESSION_SECRET_FILE.exists():
     app.secret_key = SESSION_SECRET_FILE.read_bytes()
 else:
     app.secret_key = os.urandom(32)
-    SESSION_SECRET_FILE.write_bytes(app.secret_key)
+    try:
+        SESSION_SECRET_FILE.write_bytes(app.secret_key)
+    except OSError:
+        pass  # read-only filesystem — fine, this process's secret just won't persist
 
 
 def _sid() -> str:
@@ -476,6 +485,12 @@ APP_VERSION = "9.0"
 @app.route("/version")
 def version():
     return jsonify({"version": APP_VERSION, "modules": ["workshop", "storage", "philips", "tcl", "amc"]})
+
+
+@app.route("/healthz")
+def healthz():
+    """Render (and similar hosts) hit this to confirm the service is alive."""
+    return jsonify({"ok": True}), 200
 
 @app.route("/")
 def index():
