@@ -193,6 +193,7 @@ def admin_permissions():
         users=users,
         perms_by_user=perms_by_user,
         sections=portal_auth.SECTIONS,
+        **_nav_context(user),
     )
 
 
@@ -712,9 +713,10 @@ def healthz():
     """Render (and similar hosts) hit this to confirm the service is alive."""
     return jsonify({"ok": True}), 200
 
-@app.route("/")
-def index():
-    user = portal_auth.get_current_user()
+def _nav_context(user):
+    """Shared sidebar/permission context — used by index() and any other
+    portal page that renders the sidebar shell (currently also
+    admin_permissions()), so they stay in sync automatically."""
     ig_children = set(portal_auth.accessible_children(user, "invoice-generator"))
     can_ig = bool(ig_children)
     can_sms = portal_auth.has_access(user, "sms-nonconforming")
@@ -735,18 +737,23 @@ def index():
                 default_client = c
                 break
 
-    return render_template(
-        "index.html",
-        auth_user=user,
-        can_invoice_generator=can_ig,
-        ig_children=ig_children,
-        can_sms_nonconforming=can_sms,
-        can_tbd2=can_tbd2,
-        can_training_tracker=can_tt,
-        default_portal=default_portal,
-        default_client=default_client,
-        has_any_access=bool(default_portal or can_tt),
-    )
+    return {
+        "auth_user": user,
+        "can_invoice_generator": can_ig,
+        "ig_children": ig_children,
+        "can_sms_nonconforming": can_sms,
+        "can_tbd2": can_tbd2,
+        "can_training_tracker": can_tt,
+        "default_portal": default_portal,
+        "default_client": default_client,
+        "has_any_access": bool(default_portal or can_tt),
+    }
+
+
+@app.route("/")
+def index():
+    user = portal_auth.get_current_user()
+    return render_template("index.html", **_nav_context(user))
 
 
 # ── SANITIZE: validate raw production file ────────────────────────────────────
