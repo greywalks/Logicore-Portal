@@ -1,34 +1,21 @@
-# Promethean Invoice Generator — Project Brief
+# Logicore Portal — Project Brief
 **Version:** v24
 **Last Updated:** August 2026
 **Purpose:** This file gives a new Claude session everything it needs to extend this project without requiring data files. Read this before touching any code.
 
-**v24 change — Portal wrapper + GitHub/Render repackaging.** This app is no longer the whole product — it's now **one tab** ("Invoice Generator") inside a top-level **Portal** shell, so future unrelated projects (SMS NonConforming, plus two unnamed placeholders) can live alongside it without becoming sub-modules of it. Nothing about the invoice modules themselves changed — same routes, same builders, same data logic. What changed:
-- **New top nav layer** in `templates/index.html` / `static/js/app.js`: a `showPortalPage(name)` function, separate from `showPage()`/`showSubPage()`, toggles between four portal tabs — `invoice-generator`, `sms-nonconforming`, `tbd1`, `tbd2`. Everything that used to be the entire app (the "Clients"/"System" sidebar section + all its `page-*` divs) is now wrapped in `portal-body-invoice-generator` (sidebar) / `portal-content-invoice-generator` (main) and only shows up when that portal tab is active. The other three tabs are plain "coming soon" placeholder cards with no backend.
-- **Adding a real backend for one of the placeholder tabs later:** don't nest it under `promethean`'s sub-nav pattern — it's a sibling portal tab, not a Promethean module. Give it its own `portal-content-<name>` div with whatever page/sub-page structure it needs inside, and if it needs sidebar links of its own (like Promethean's Clients section), wrap them in a `portal-body-<name>` div next to `portal-body-invoice-generator`, following that pattern.
-- **Repackaged for GitHub + Render.com deploy** (previously this only ran locally via the `.bat` launcher):
-  - `app.py` now binds `0.0.0.0`/`$PORT` and skips the `webbrowser.open()` call when hosted (detected via `RENDER` or `PORT` env vars — see `IS_HOSTED`). Local `.bat` usage is unaffected.
-  - Session-cookie secret now prefers an explicit `FLASK_SECRET_KEY` env var over the file-based `.flask_secret` (Render's filesystem is ephemeral — see Gotcha below).
-  - Added `/healthz`, `Procfile` (gunicorn, `gthread` worker class so SSE log-streaming doesn't block other requests), `render.yaml` blueprint, `gunicorn` in `requirements.txt`.
-  - Renamed `_gitignore` → `.gitignore` and `tailwind_config.js` → `tailwind.config.js` (the Tailwind CLI only auto-discovers the dotted name — the underscored one was silently never picked up by `npm run build`, which is presumably why past class additions needed a manual `--config` flag or were missed).
-  - `static/js/app.js` — moved from `static/app.js` to match the path `tailwind.config.js`'s `content` globs already expected (`../static/js/app.js`); this was inconsistent before.
-  - **New gotcha for future work:** Render's default web service has **no persistent disk**. `uploads/`, `outputs/`, `.flask_secret`, and any admin-edited config JSON (`storage_prices.json`, `amc_prices.json`, `philips_dimensions.json`, `philips_repair_cost.json`, `amc_dimensions.json`) reset on every deploy and every restart unless a paid Render Disk is attached and those paths are moved onto it. Fine for the invoice-generation workflow itself (each run is self-contained — upload, generate, download), but Config-page edits (serial rules, storage pricing, AMC/Philips dimension tables) won't survive a restart on the free tier. `serial_rules.json` and the `*_default.json` fallback files are committed to the repo and reset to those baked-in defaults, not lost data — it's specifically anything written by the app at runtime that's at risk.
+**v24 change — Portal restructure + Training Tracker mount:** This repo is no longer just the invoice generator — it's now the **Logicore Portal**, a Flask shell with a top-level sidebar tab picker. The entire previous app (all five invoice clients + Config) now lives inside the **Invoice Generator** portal tab, unchanged in behavior. Alongside it: **SMS NonConforming** and **TBD 2** (static placeholder tabs, no backend yet), and **Training Tracker** — a real, separate Flask app (`training_tracker/app.py`, cloned from the standalone `training-planner` project) mounted at `/training-tracker/` via `werkzeug.middleware.dispatcher.DispatcherMiddleware`. See "Portal shell" and "Training Tracker" sections below for the full picture before touching top-level nav or the training_tracker/ folder.
 
-**v23 change:** Added a new Promethean sub-module, **FedEx Shipment Upload** — not an invoice, a bulk "call" import file for the ticketing system, built from FedEx's raw monthly billing export. New files: `fedex_shipment_builder.py`, `fedex_shipment_defaults.json`, `template/FedEx_Shipment_Upload_Template.xlsx`. New routes in `app.py`: `/analyze_fedex_shipment`, `/build_fedex_shipment`, `/stream_fedex_shipment`, `/get_fedex_shipment_defaults`, `/set_fedex_shipment_defaults`. New sub-nav page in `templates/index.html` (`page-fedex-shipment`) wired via `showSubPage('fedex-shipment','promethean')`, plus a matching JS block in `app.js`. Full details under "Module 3: FedEx Shipment Upload" below.
-
-**Also corrected in v23** — two things this doc had wrong that weren't related to the change above, caught while reading the real code before starting:
-- **AMC is not an empty placeholder.** It has a full two-step module already (`/analyze_amc`, `/confirm_amc`, `/stream_amc`, `amc_builder.py`, dimensions + pricing admin endpoints) — mirrors Module 2 (Storage) closely: Receiving/Shipping/Inventory exports in, sq-ft-based storage billing out, with a review step for models missing a Dimensions entry. The "Adding a New Client/Module" walkthrough below that assumes `amc` is still a blank shell is stale; if you're adding a *sixth* client, you'll need a new top-level page from scratch, not the amc placeholder.
-- **Session state is not one shared global dict.** There's a `SessionStore` class (defined near the top of `app.py`) keyed per browser session (`_workshop`, `_storage`, `_philips`, `_tcl`, `_amc`, and now `_fedex_shipment` are all instances of it) — this was already fixed by the time of this update, this doc's "Common Gotchas" section just hadn't caught up. Concurrent users no longer stomp each other's in-progress analysis; a `.flask_secret` file persists the signed-cookie secret across restarts so sessions survive a relaunch.
+**Also folded into v24 — folder reorg.** The repo root used to be flat (`index.html`, `app.js`, `app.css`, `*.xlsx` templates all sitting loose next to `app.py`). It's now organized: `templates/index.html`, `static/js/app.js`, `static/css/{app.css,tailwind.css}`, `static/{logicore_mark.png,logicore_logo.png}`, `template/*.xlsx` (Excel templates the builders copy-and-fill), `build/` (Tailwind CLI tooling — `package.json`, `tailwind.config.js`, `input.css`; not needed to run the app). No code changes were needed for this — every builder already referenced `template/<file>.xlsx` via `Path(__file__).parent / "template" / ...`, and `templates/index.html` already used root-relative `/static/...` URLs, so moving files onto disk to match was purely mechanical.
 
 ---
 
 ## Architecture Overview
 
-This is a **Flask web app** that runs locally on the user's machine (launched via `Launch_Invoice_Generator.bat`, app version reported at `/version` — currently `APP_VERSION = "9.0"` in `app.py`, unrelated to this doc's own version number above). It generates Excel invoices for five USSI client accounts — **Promethean** (3 modules), **AMC**, **TCL**, and **Philips** — all with real backends now (see "Multi-client frontend" below).
+This is a **Flask web app** that runs locally on the user's machine (launched via `Launch_Invoice_Generator.bat`, app version reported at `/version` — currently `APP_VERSION = "9.0"` in `app.py`, unrelated to this doc's own version number above). It's now the **Logicore Portal**: a sidebar tab picker wrapping the invoice generator (five USSI client accounts — Promethean 3 modules, AMC, TCL, Philips) plus a real Training Tracker mount and two placeholder tabs.
 
 ```
-invoice_app_v2/
-├── app.py                  # Flask routes — one section per invoice module
+portal/
+├── app.py                  # Flask routes — invoice modules + Training Tracker mount (see below)
 ├── builder.py               # Excel builder for Workshop Invoice
 ├── storage_builder.py       # Excel builder for Storage Invoice
 ├── fedex_shipment_builder.py # Builder for FedEx Shipment Upload (Promethean, not an invoice — see Module 3)
@@ -41,40 +28,75 @@ invoice_app_v2/
 ├── storage_prices.json       # Optional — created at runtime when prices are overridden in-app (not in repo by default)
 ├── fedex_shipment_defaults.json # Config-driven site info + margin divisor for the FedEx Shipment Upload module
 ├── whitelist_default.json    # Built-in Parts/Units whitelist fallback for Storage module
-├── templates/index.html      # Single-page frontend (Tailwind, vanilla JS) — portal shell + Invoice Generator tab
+├── templates/index.html      # Portal shell + entire Invoice Generator tab (Tailwind, vanilla JS)
 ├── static/
-│   ├── js/app.js              # All frontend JS (portal nav, page nav, module logic)
-│   ├── css/app.css            # Hand-written theme/layout CSS
+│   ├── js/app.js              # All frontend JS — portal nav, page/sub-page nav, every module's logic
+│   ├── css/app.css            # Hand-written theme/layout CSS (design tokens, sidebar, cards, etc.)
 │   ├── css/tailwind.css       # Compiled Tailwind output (see build/) — do not hand-edit
 │   └── logicore_mark.png, logicore_logo.png
-├── build/                     # Dev-only Tailwind build tooling, not needed to run the app
+├── build/                     # Dev-only Tailwind build tooling for templates/index.html + static/js/app.js
 │   ├── package.json
-│   ├── tailwind.config.js     # NOTE: must be this exact filename (dotted), not tailwind_config.js — the CLI won't discover it otherwise
+│   ├── tailwind.config.js     # Must be this exact filename (dotted) — the CLI won't discover `tailwind_config.js`
 │   └── input.css
-├── template/                 # Excel/template files (one per module)
+├── template/                 # Excel/template files (one per invoice module)
 │   ├── Sample_Promethean_Workshop_Invoice.xlsx
 │   ├── Sample_Promethean_Storage_Small_Parts_Invoice.xlsx
+│   ├── TCL_Warehouse_Invoice_Template.xlsx
 │   └── FedEx_Shipment_Upload_Template.xlsx   # header-only copy of the ticketing system's own import template
-├── uploads/                  # Temp storage for user-uploaded files
-├── outputs/                  # Generated invoices land here
-├── requirements.txt           # flask, pandas, openpyxl, gunicorn
-├── Procfile                   # `web: gunicorn app:app ...` — used by Render at deploy time
-├── render.yaml                # Render Blueprint (one-click service creation)
+├── uploads/                  # Temp storage for user-uploaded files (Invoice Generator only)
+├── outputs/                  # Generated invoices land here (Invoice Generator only)
+├── training_tracker/          # Separate mounted Flask app — see "Training Tracker" section below
+│   ├── app.py                 # Full app (routes, DB, auth) — same code as the standalone training-planner repo,
+│   │                           # minus its own __main__ server startup and static folder (portal supplies both)
+│   ├── templates/              # base.html, login.html, index.html, week_detail.html, people.html, sign.html,
+│   │                           # admin.html, account.html, reports.html — retthemed to match the portal (see below)
+│   ├── training_planner.db    # Created automatically on first run, next to training_tracker/app.py
+│   └── .secret_key            # Auto-generated session-signing key for Training Tracker — keep private
+├── requirements.txt           # flask, pandas, openpyxl, waitress, reportlab (waitress+reportlab are Training Tracker's)
 └── Launch_Invoice_Generator.bat
 ```
 
 ### Portal shell (new in v24 — read this before touching top-level nav)
 
 `templates/index.html` now has **three levels of navigation**, not two:
-- **Portal-level tabs** (`showPortalPage(name)`): `invoice-generator` (default, contains this entire app), `sms-nonconforming`, `tbd1`, `tbd2` (all three are static placeholder cards with no backend). Sidebar buttons: `portal-nav-<name>`. Sidebar sub-content: `portal-body-<name>` (only `invoice-generator` has one — it's the "Clients"/"System" section described below). Main content: `portal-content-<name>`.
-- **Top-level client tabs** (`showPage(name)`), living inside the `invoice-generator` portal tab: `promethean`, `amc`, `tcl`, `philips`, `config` — unchanged from before, wired via `showPage()`.
-- **Sub-nav within `promethean`** (`showSubPage()`): `invoice` (Workshop), `storage` (Storage), `fedex-shipment` (FedEx Shipment Upload).
+- **Portal-level tabs** (`showPortalPage(name)` in `static/js/app.js`): `invoice-generator` (default — contains the entire previous app, unchanged), `sms-nonconforming` (placeholder), `tbd2` (placeholder). Toggles `hidden` on `<div id="portal-content-<n>">` (main content) and `<div id="portal-body-<n>">` (sidebar sub-nav, `invoice-generator` only), and `active`/`text-steel` on `<button id="portal-nav-<n>">`.
+- **Training Tracker is NOT one of these three.** Its sidebar entry (`<a id="portal-nav-training-tracker" href="/training-tracker/">`) is a plain link that does a real page navigation, not a JS-toggled tab — it's a separate Flask app with its own login/session flow (see below), and doesn't fit the hidden-div SPA pattern the other tabs use. Don't add it to `showPortalPage()`'s `allPortals` array; it was deliberately left out.
+- **Top-level client tabs**, inside `invoice-generator` (`showPage(name)`): `promethean`, `amc`, `tcl`, `philips`, `config` — unchanged from before.
+- **Sub-nav within a client tab** (`showSubPage(name, client)`): currently only `promethean` has one (`invoice`, `storage`, `fedex-shipment`) — unchanged from before.
 
-**Adding a real module for a placeholder tab (e.g. SMS NonConforming):** it is a sibling of `invoice-generator`, not a module inside it. Give it its own `portal-content-sms-nonconforming` div with whatever internal page/sub-page structure it needs (its own `showPage`-style function if it needs one — don't try to reuse Promethean's `showPage()`/`subMap`, those are scoped to the invoice-generator client tabs specifically). If it needs its own sidebar links, add a `portal-body-sms-nonconforming` div next to `portal-body-invoice-generator` and toggle it the same way `showPortalPage()` already does.
+**To add a new portal-level tab** (a sibling of Invoice Generator, like SMS NonConforming): add a `<button class="side-link portal-nav-btn text-steel" data-portal="<name>" id="portal-nav-<name>" onclick="showPortalPage('<name>')">` in the sidebar, a `<div id="portal-content-<name>" class="hidden ...">` in main content, and register `<name>` in the `allPortals` array near the top of the "Sidebar / topbar enhancements" IIFE in `static/js/app.js`. If the new tab needs real multi-page functionality (its own auth, its own DB) rather than a simple form, follow the Training Tracker pattern instead (separate Flask app + `DispatcherMiddleware` mount + plain `<a href>` sidebar link) — don't force it into the hidden-div pattern.
+**To add a new client inside Invoice Generator:** unchanged from before — new top-level page (`nav-<client>`/`page-<client>`, registered in `showPage()`'s `allPages` array) inside `portal-content-invoice-generator`.
 
-### Multi-client frontend (inside the Invoice Generator portal tab)
+### Training Tracker (new in v24)
 
-All five client tabs now have real backends — there is no remaining empty placeholder. **A sixth client needs a brand-new top-level page** (`nav-<client>` / `page-<client>` in `index.html`, registered in `showPage()`'s `allPages` array in `app.js`) rather than reusing an existing div. When adding a new module *for an existing client* (e.g. a third Promethean module, as done here), follow the `promethean` sub-nav pattern instead — add a `<button class="side-sublink" id="subnav-<sub>" data-sub="<sub>" onclick="showSubPage('<sub>','promethean')">` and register `<sub>` in `showSubPage()`'s `subMap.promethean` array in `app.js`.
+A weekly training planner (assign/edit topics per week, attendance, digital + physical sign-off sheets, roster, reports) — originally built and shipped as its own standalone repo (`training-planner` on GitHub), now folded into the portal as a mounted sub-app rather than rewritten as a blueprint of the invoice generator.
+
+**Why mounted, not merged as a blueprint:** Training Tracker has real multi-page navigation, its own login/session/role system (admin/editor/trainee), and its own SQLite database — none of which fit the Invoice Generator's single-page-with-hidden-divs pattern, and rewriting ~1700 lines of routes as a blueprint would have been pure risk for no benefit. Instead, `training_tracker/app.py` is a complete, ordinary Flask app (`app = Flask(__name__, template_folder=TEMPLATE_DIR, static_folder=None)`) that runs *exactly* as it did standalone. The portal's `app.py` composes it in at the WSGI level:
+```python
+from training_tracker.app import app as training_tracker_app, init_db as _tt_init_db
+_tt_init_db()
+app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {"/training-tracker": training_tracker_app.wsgi_app})
+```
+`DispatcherMiddleware` (from `werkzeug.middleware.dispatcher`) sets `SCRIPT_NAME` correctly on every request routed to it, so `url_for(...)` calls inside `training_tracker/app.py`'s own routes/templates automatically produce `/training-tracker/...`-prefixed URLs with zero changes to that code. `_tt_init_db()` is called at **import time** here (not left inside `training_tracker/app.py`'s `if __name__ == "__main__":` guard, since that guard never runs when the module is imported rather than executed directly) — `init_db()` itself is idempotent (`CREATE TABLE IF NOT EXISTS` everywhere), safe to call on every portal startup.
+
+**Static assets:** `training_tracker/app.py` has `static_folder=None` — its templates reference the portal's shared assets directly via root-relative paths (`<img src="/static/logicore_mark.png">` in the header, for instance), not its own static endpoint. Since the browser resolves those paths against the domain root regardless of which mounted app served the page, they correctly hit the *portal's* static route. Don't add a `static_folder` back without checking this still holds.
+
+**Data:** `training_tracker/training_planner.db` and `training_tracker/.secret_key` are created next to `training_tracker/app.py` on first run (via `BASE_DIR = os.path.dirname(os.path.abspath(__file__))` inside that file, unchanged from the standalone version) — separate from the invoice generator's own data, no shared state between the two apps beyond the WSGI-level mount. Default login is `admin` / `admin`; there's a red "using default admin password" banner in the app itself reminding whoever sets it up to change it.
+
+**Retheme (v24):** The standalone `training-planner` shipped with its own warm "parchment/ink/amber" paper theme (light page, Fraunces serif headings, amber accent) and a fully admin-configurable color system already built in (`THEME_FIELDS`/`THEME_DEFAULTS` in `training_tracker/app.py`, edited from `/training-tracker/admin` → Appearance tab, stored in the `theme_settings` table, injected into `base.html`'s Tailwind CDN config at request time). Rather than add a new color system, the existing one's **hex defaults were repointed to the portal's own dark palette** (see `static/css/app.css` `:root` — `--bg`, `--accent`, etc.) and — critically — **the light/dark derivation direction in `build_theme()` was flipped**:
+- `ink` (originally the dark tone, used for text-on-light-page + the header's dark bg) is now the **light** tone (`#EEF2F6`, matches the portal's `--text`), so its "faint"/muted variant is derived with `darken()` instead of `lighten()`.
+- `parchment` (originally the light tone, the page background) is now the **dark** tone (`#0A0D12`, matches the portal's `--bg`), so its "dim"/"line" (card surface / border) variants are derived with `lighten()` instead of `darken()`.
+- `amber` (accent) → portal teal `#2FD8A6`; `sage` (success) → `#22C55E`; `rose` (danger) → `#EF4444`. These two keep their original `darken()`/`lighten()` derivation — only ink/parchment's direction changed, since only they flipped which tone (light vs dark) they represent.
+- Every hardcoded `bg-white` card across the templates (44 occurrences) was swapped to `bg-parchment-dim` (the new dark card-surface token) so they pick up the theme dynamically instead of staying a hardcoded white square on a dark page. Every `bg-ink ... text-parchment` "dark pill" button (the original theme's primary-button pattern) was swapped to `bg-amber ... text-ink` — light-on-dark became light-pill-dark-text, matching the portal's own `bg-accent text-ink` primary-button convention.
+- The header in `base.html` is **not** theme-token-driven — it's pinned to a fixed `.tt-header { background: #080a0e; color: #eef2f6; }` (matching the portal's `--sidebar-bg`/`--text` exactly) so it stays a constant dark bar regardless of what an admin sets ink/parchment to in Appearance settings, and links back to the portal via the Logicore mark. If you ever want the header to be admin-themeable too, it'll need its own THEME_FIELDS entry rather than reusing ink/parchment (which now drive the main canvas).
+- All seven `<dialog>` modal backdrops (`backdrop:bg-ink/60`) were changed to `backdrop:bg-parchment/70` — they need to stay a *dark* scrim regardless of the ink/parchment swap, and after the swap `ink` is light so the original class would have produced a translucent light overlay instead.
+- Fonts: `Fraunces` (serif display font) → `Space Grotesk` (matches the portal's `--font-display`); `Inter` and `IBM Plex Mono` were already shared with the portal, unchanged.
+- **Why still on the Tailwind CDN script** (`<script src="https://cdn.tailwindcss.com">`) instead of the portal's precompiled `static/css/tailwind.css`, even though the rest of the portal deliberately avoids the CDN for reliability: the Appearance admin panel needs to inject admin-chosen hex values into Tailwind's color config *at request time*, per-instance, from the database — a build-time-compiled stylesheet can't do that. This is a deliberate, narrow exception for this one sub-app, not a precedent for the rest of the portal.
+- `site.name` content default is still `"Training Ledger"` (admin-editable from `/training-tracker/admin` → Edit Content, unchanged from the standalone repo) even though the portal sidebar label is "Training Tracker" — these don't have to match; the sidebar label is fixed portal chrome, the in-app name is whatever the admin sets it to.
+
+If you're extending Training Tracker's functionality (not just its look), treat `training_tracker/app.py` as if you were working in the standalone `training-planner` repo — its routes, DB schema, and CONTENT_SCHEMA/THEME_FIELDS system are all unchanged from that repo except for the mounting/theming changes documented above.
+
+
 
 ### How a module works (pattern to follow for new modules)
 Most modules use a **two-step workflow**, not a single generate call — but it's not mandatory. Workshop and Storage need it because their source data has real ambiguity (unresolved serials, unmatched parts) that needs a human decision before billing. **FedEx Shipment Upload (Module 3, new in v23) also uses two steps, but for a lighter reason**: the transform itself is fully deterministic (nothing to correct), the review step exists purely so a bad upload or an unexpected batch of "defaulted to USSI's own office" rows surfaces before anything is written to `outputs/`, given this bills money. Don't assume two-step always means "there's data to reconcile" — check whether the specific module actually needs a correction UI before copying the review-table pattern wholesale; a simpler module (like this one) can skip straight to a summary + "used defaults" list.
@@ -412,14 +434,14 @@ Matched case-insensitively, stripped of whitespace.
 ## Frontend Patterns (`templates/index.html`)
 
 ### Three-level navigation (portal / client / module — see "Portal shell" above for the full picture)
-- **Portal-level tabs** (`showPortalPage(name)`): `invoice-generator`, `sms-nonconforming`, `tbd1`, `tbd2`. Only `invoice-generator` has real content; the rest are placeholder cards.
-- **Top-level client tabs**, inside `invoice-generator` (`showPage(name)`): `promethean`, `amc`, `tcl`, `philips`, `config`. All five are real now — there's no empty placeholder left (this doc said otherwise for a long time; see the v23 correction note near the top if you're diffing against an old copy).
+- **Portal-level tabs** (`showPortalPage(name)`): `invoice-generator`, `sms-nonconforming`, `tbd2`. Only `invoice-generator` has real content; the other two are placeholder cards. Training Tracker is a sibling but NOT part of this set — see "Portal shell" above.
+- **Top-level client tabs**, inside `invoice-generator` (`showPage(name)`): `promethean`, `amc`, `tcl`, `philips`, `config`. All five are real now — there's no empty placeholder left (this doc said otherwise for a long time; the correction note near the top predates even that).
 - **Sub-nav within a client tab** (`showSubPage(name, client)`): currently only `promethean` has one, toggling between `invoice`, `storage`, and `fedex-shipment`.
 - `showPortalPage()` toggles `hidden` on `<div id="portal-content-<n>">` (main) and `<div id="portal-body-<n>">` (sidebar, `invoice-generator` only) and `active` on `<button id="portal-nav-<n>">`. `showPage()` toggles `hidden` on `<div id="page-<n>">` and `active` on `<button id="nav-<n>">`. `showSubPage()` does the equivalent for `<div id="page-<sub>">` / `<button id="subnav-<sub>">`.
 
 **To add a new module for an existing client:** add a subnav button + `page-<module>` div inside that client's section, following the `page-invoice`/`page-storage` pattern.
 **To add a new client inside Invoice Generator:** add a brand-new top-level page (`nav-<client>`/`page-<client>`, registered in `showPage()`'s `allPages` array) inside `portal-content-invoice-generator` — there's no empty placeholder to reuse anymore.
-**To build out one of the placeholder portal tabs (SMS NonConforming, TBD 1, TBD 2):** that's a sibling of Invoice Generator, not a client inside it — see "Portal shell" above.
+**To build out one of the placeholder portal tabs (SMS NonConforming, TBD 2):** that's a sibling of Invoice Generator, not a client inside it — see "Portal shell" above.
 
 ### File drop-zones
 Each upload input has a matching drop-zone div. Pattern:
@@ -464,16 +486,10 @@ You should only need to attach: **the zip** + **the sample invoice Excel** (or, 
 
 ---
 
-## Deploying to Render
-
-1. Push this repo to GitHub (see `README.md` for the one-time setup).
-2. In Render: **New → Blueprint**, point it at the repo — `render.yaml` at the root defines the service, so most of the dashboard config is automatic. Or **New → Web Service** manually with build command `pip install -r requirements.txt` and start command from `Procfile`.
-3. Set the `FLASK_SECRET_KEY` env var (the blueprint auto-generates one; set it yourself if creating the service manually) — see the v24 note above for why.
-4. First deploy will be slow-ish (pandas/openpyxl wheels); subsequent ones are cached.
-5. Health check hits `/healthz`. If Render reports the service unhealthy, check the deploy logs before assuming it's a route problem — gunicorn failing to bind `$PORT` looks the same from the dashboard.
-6. Remember the ephemeral-filesystem gotcha above: this is fine for normal invoice generation (self-contained per run), but don't rely on Config-page edits surviving a redeploy unless a persistent Disk is attached.
-
 ## Common Gotchas
+
+- **Portal-mounted Training Tracker isn't in `app.py`'s own `url_map`.** Since it's composed at the WSGI level (`DispatcherMiddleware`), `app.app.url_map.iter_rules()` won't show any `/training-tracker/*` routes — that's expected, not a sign the mount failed. Test it by actually hitting `/training-tracker/...` over HTTP, not by inspecting the main Flask app's routing table.
+- **Don't call `training_tracker.app.init_db()` inside `if __name__ == "__main__":` in `training_tracker/app.py`.** That guard never runs when the module is imported (which is what happens every time — it's mounted, not executed directly), so DB init has to stay where it is now: called once at import time in the portal's `app.py`, right after the import.
 
 - **openpyxl theme colors**: Use `Color(theme=N, tint=T, type="theme")` — don't use hex colors for fills that need to match the template exactly.
 - **Formula recalculation**: openpyxl writes formulas as strings. Values won't show until opened in Excel. This is expected and correct behavior.

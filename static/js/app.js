@@ -20,26 +20,6 @@ function showPage(page) {
   if(page==='config') loadCfg();
 }
 
-// ── Portal-level nav (top of the tree — Invoice Generator vs. future tabs) ──
-// Everything that used to be the whole app (the "Clients"/"System" sidebar
-// section + all of its page-* divs) now lives inside the "Invoice Generator"
-// portal tab, wrapped in portal-body-invoice-generator (sidebar) and
-// portal-content-invoice-generator (main). showPage()/showSubPage() below
-// are unchanged and still control which page/sub-page is visible *within*
-// that tab. This layer just decides which portal tab is visible at all.
-function showPortalPage(portal) {
-  const allPortals = ['invoice-generator', 'sms-nonconforming', 'tbd1', 'tbd2'];
-  allPortals.forEach(p => {
-    const navBtn = document.getElementById('portal-nav-' + p);
-    const body   = document.getElementById('portal-body-' + p);     // sidebar sub-content (invoice-generator only)
-    const content = document.getElementById('portal-content-' + p); // main content
-    if (navBtn) { navBtn.classList.toggle('active', p === portal); navBtn.classList.toggle('text-steel', p !== portal); }
-    if (body) body.classList.toggle('hidden', p !== portal);
-    if (content) content.classList.toggle('hidden', p !== portal);
-  });
-  closeSidebarMobile();
-}
-
 // ── Sub-page nav (within a brand section) ─────────────────────────────────
 function showSubPage(subPage, brand) {
   const subMap = {
@@ -1691,18 +1671,33 @@ document.addEventListener('keydown', e => { if(e.key==='Escape') hideAbout(); })
     });
   };
 
-  const portalCrumbMap = { 'sms-nonconforming': 'SMS NonConforming', 'tbd1': 'TBD 1', 'tbd2': 'TBD 2' };
-  const prevShowPortalPage = window.showPortalPage;
+  // ── Portal-level nav (Invoice Generator / SMS NonConforming / TBD 2) ──────
+  // Training Tracker is NOT part of this toggle set — it's a real multi-page
+  // Flask app of its own (own login, own sessions) mounted at
+  // /training-tracker/, so its sidebar entry is a plain <a> that navigates
+  // away rather than a JS-toggled panel. Keep it out of `allPortals`.
+  const allPortals = ['invoice-generator', 'sms-nonconforming', 'tbd2'];
+  const portalCrumbMap = { 'invoice-generator': 'Promethean', 'sms-nonconforming': 'SMS NonConforming', 'tbd2': 'TBD 2' };
+
   window.showPortalPage = function(portal) {
-    prevShowPortalPage(portal);
+    allPortals.forEach(p => {
+      const navBtn  = document.getElementById('portal-nav-' + p);
+      const body    = document.getElementById('portal-body-' + p);     // sidebar sub-nav (invoice-generator only)
+      const content = document.getElementById('portal-content-' + p);  // main content
+      if (navBtn) { navBtn.classList.toggle('active', p === portal); navBtn.classList.toggle('text-steel', p !== portal); }
+      if (body) body.classList.toggle('hidden', p !== portal);
+      if (content) content.classList.toggle('hidden', p !== portal);
+    });
     if (portal === 'invoice-generator') {
-      // Restore whichever client/page was last active, rather than assuming Promethean.
-      const activeClientBtn = document.querySelector('.side-link.nav-btn.active');
-      const activeClient = activeClientBtn ? activeClientBtn.dataset.page : 'promethean';
-      setCrumb(crumbMap[activeClient] || activeClient, activeClient === 'promethean' ? (subCrumbMap[document.querySelector('.side-sublink.active')?.dataset.sub] || 'Workshop Invoice') : null);
+      // Restore whichever client/page was last active rather than assuming Promethean.
+      const activeNav = document.querySelector('.side-link.nav-btn.active');
+      const page = activeNav ? activeNav.dataset.page : 'promethean';
+      setCrumb('Promethean', page === 'promethean' ? 'Workshop Invoice' : null);
+      if (page !== 'promethean') setCrumb(crumbMap[page] || page, null);
     } else {
       setCrumb(portalCrumbMap[portal] || portal, null);
     }
+    closeSidebarMobile();
   };
 
   window.addEventListener('DOMContentLoaded', () => setCrumb('Promethean', 'Workshop Invoice'));

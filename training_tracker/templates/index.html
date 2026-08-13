@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}{{ c('nav.weeks') }} · {{ c('site.name') }}{% endblock %}
+
+{% block content %}
+<div class="flex items-end justify-between mb-8 flex-wrap gap-4">
+  <div>
+    <p class="font-mono text-xs uppercase tracking-widest text-amber-dark mb-1">
+      {{ weeks|length }} {{ c('index.entries_label') if weeks|length == 1 else c('index.entries_label_plural') }} · {{ people_count }} {{ c('index.roster_count_label') }}
+    </p>
+    <h1 class="font-display text-4xl text-ink">{{ c('index.heading') }}</h1>
+  </div>
+  <div class="flex items-center gap-2">
+    {% if weeks and can_manage_courses %}
+    <a href="{{ url_for('reports_page') }}" class="font-mono text-xs uppercase tracking-wide border border-parchment-line px-4 py-3 rounded-md hover:border-amber hover:text-amber-dark bg-parchment-dim">{{ c('reports.nav_link') }}</a>
+    {% endif %}
+    {% if can_manage_courses %}
+    <button onclick="newWeekDialog.showModal()" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-5 py-3 rounded-md shadow-sm transition-colors">
+      {{ c('index.new_week_btn') }}
+    </button>
+    {% endif %}
+  </div>
+</div>
+
+{% if not weeks %}
+<div class="border border-dashed border-parchment-line rounded-lg p-14 text-center bg-parchment-dim/40">
+  <p class="font-display text-2xl text-ink-faint mb-2">{{ c('index.empty_title') }}</p>
+  <p class="font-mono text-sm text-ink-faint mb-6">{{ c('index.empty_body') }}</p>
+  {% if can_manage_courses %}
+  <button onclick="newWeekDialog.showModal()" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-5 py-3 rounded-md">
+    {{ c('index.new_week_btn') }}
+  </button>
+  {% endif %}
+</div>
+{% else %}
+<div class="space-y-4">
+  {% for w in weeks %}
+  <a href="{{ url_for('week_detail', week_id=w.row.id) }}" class="group flex items-center gap-6 bg-parchment-dim border border-parchment-line rounded-lg px-6 py-5 hover:border-amber hover:shadow-md transition-all">
+    <div class="font-mono text-3xl text-amber-dark w-16 text-center shrink-0">{{ '%02d' % w.row.week_number }}</div>
+    <div class="flex-1 min-w-0">
+      <h2 class="font-display text-xl text-ink group-hover:text-amber-dark transition-colors truncate">{{ w.row.title }}</h2>
+      <p class="font-mono text-xs text-ink-faint uppercase tracking-wide mt-1">
+        {% if w.row.start_date %}{{ w.row.start_date | friendly_date }} · {% endif %}
+        {{ w.topic_count }} {{ c('index.topics_label') }}
+      </p>
+    </div>
+    <div class="hidden sm:flex flex-col items-end gap-1 w-40 shrink-0">
+      <p class="font-mono text-xs text-ink-faint uppercase tracking-wide">{{ w.attended }}/{{ people_count }} {{ c('index.roster_count_label') }}</p>
+      <div class="w-full h-2 bg-parchment-dim rounded-full overflow-hidden">
+        <div class="h-full bg-sage" style="width: {{ (w.attended / people_count * 100) if people_count else 0 }}%"></div>
+      </div>
+    </div>
+    <svg class="w-5 h-5 text-ink-faint group-hover:text-amber-dark shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+  </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+<dialog id="newWeekDialog" class="rounded-lg p-0 backdrop:bg-parchment/70 w-full max-w-md">
+  <form method="POST" action="{{ url_for('new_week') }}" class="bg-parchment p-6 rounded-lg border border-parchment-line">
+    <h3 class="font-display text-2xl text-ink mb-4">{{ c('index.dialog_title') }}</h3>
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('index.field_title') }}</label>
+    <input name="title" placeholder="{{ c('index.field_title_placeholder') }}" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('index.field_date') }}</label>
+    <input type="date" name="start_date" class="w-full mb-6 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+    <div class="flex justify-end gap-3">
+      <button type="button" onclick="newWeekDialog.close()" class="font-mono text-sm uppercase tracking-wide text-ink-faint px-4 py-2 hover:text-ink">{{ c('index.cancel_btn') }}</button>
+      <button type="submit" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-5 py-2 rounded-md">{{ c('index.create_btn') }}</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}

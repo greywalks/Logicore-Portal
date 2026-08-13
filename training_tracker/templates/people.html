@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}{{ c('people.heading') }} · {{ c('site.name') }}{% endblock %}
+
+{% block content %}
+<div class="mb-8">
+  <p class="font-mono text-xs uppercase tracking-widest text-amber-dark mb-1">{{ people|length }} {{ c('people.count_label') }}</p>
+  <h1 class="font-display text-4xl text-ink">{{ c('people.heading') }}</h1>
+</div>
+
+<div class="grid grid-cols-1 {% if can_manage_courses %}md:grid-cols-3{% endif %} gap-8">
+  <div class="{% if can_manage_courses %}md:col-span-2{% endif %}">
+    {% if not people %}
+    <div class="border border-dashed border-parchment-line rounded-lg p-10 text-center bg-parchment-dim/40">
+      <p class="font-mono text-sm text-ink-faint">{{ c('people.empty') }}</p>
+    </div>
+    {% else %}
+    <ul class="divide-y divide-parchment-line bg-parchment-dim border border-parchment-line rounded-lg">
+      {% for p in people %}
+      <li class="flex items-center justify-between px-5 py-4">
+        <div>
+          <p class="font-body text-sm text-ink font-medium">{{ p.name }}</p>
+          {% if p.email %}<p class="font-mono text-xs text-ink-faint">{{ p.email }}</p>{% endif %}
+        </div>
+        {% if can_manage_courses %}
+        <form method="POST" action="{{ url_for('delete_person', person_id=p.id) }}" onsubmit="return confirm({{ c('people.remove_confirm', name=p.name) | tojson }})">
+          <button class="font-mono text-xs uppercase tracking-wide text-ink-faint hover:text-rose">{{ c('people.remove_btn') }}</button>
+        </form>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+
+  {% if can_manage_courses %}
+  <div>
+    <form method="POST" action="{{ url_for('add_person') }}" class="bg-parchment-dim border border-parchment-line rounded-lg p-5">
+      <h3 class="font-display text-lg text-ink mb-4">{{ c('people.add_heading') }}</h3>
+      <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('people.name_label') }}</label>
+      <input name="name" required class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+      <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('people.email_label') }}</label>
+      <input type="email" name="email" class="w-full mb-5 px-3 py-2 rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
+      <button class="w-full bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-4 py-2.5 rounded-md">{{ c('people.add_btn') }}</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

@@ -1,0 +1,296 @@
+{% extends "base.html" %}
+{% block title %}{{ week.title }} · {{ c('site.name') }}{% endblock %}
+
+{% block content %}
+<a href="{{ url_for('index') }}" class="inline-flex items-center gap-1 font-mono text-xs uppercase tracking-widest text-ink-faint hover:text-amber-dark mb-6">
+  <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+  {{ c('week.back_link') }}
+</a>
+
+<div class="flex items-start justify-between gap-6 flex-wrap mb-8">
+  <div class="flex items-start gap-4">
+    <div class="font-mono text-4xl text-amber-dark">{{ '%02d' % week.week_number }}</div>
+    <div>
+      <h1 class="font-display text-3xl md:text-4xl text-ink">{{ week.title }}</h1>
+      {% if week.start_date %}<p class="font-mono text-xs text-ink-faint uppercase tracking-wide mt-1">{{ week.start_date | friendly_date }}</p>{% endif %}
+    </div>
+  </div>
+  {% if can_manage_courses %}
+  <div class="flex gap-2">
+    <button onclick="editWeekDialog.showModal()" class="font-mono text-xs uppercase tracking-wide border border-parchment-line px-4 py-2 rounded-md hover:border-amber hover:text-amber-dark bg-parchment-dim">{{ c('week.edit_btn') }}</button>
+    <form method="POST" action="{{ url_for('delete_week', week_id=week.id) }}" onsubmit="return confirm({{ c('week.delete_confirm') | tojson }})">
+      <button class="font-mono text-xs uppercase tracking-wide border border-rose/40 text-rose px-4 py-2 rounded-md hover:bg-rose/10 bg-parchment-dim">{{ c('week.delete_btn') }}</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+
+{% if week.notes %}
+<div class="bg-parchment-dim border border-parchment-line rounded-lg px-5 py-4 mb-8 font-body text-sm text-ink-light whitespace-pre-line">{{ week.notes }}</div>
+{% endif %}
+
+<div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
+
+  <!-- Topics column -->
+  <div class="lg:col-span-2 space-y-5">
+    <div class="flex items-center justify-between">
+      <h2 class="font-display text-xl text-ink">{{ c('week.topics_heading') }}</h2>
+      {% if can_manage_courses %}
+      <button onclick="newTopicDialog.showModal()" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-xs uppercase tracking-wide px-4 py-2 rounded-md">{{ c('week.add_topic_btn') }}</button>
+      {% endif %}
+    </div>
+
+    {% if not topics %}
+    <div class="border border-dashed border-parchment-line rounded-lg p-10 text-center bg-parchment-dim/40">
+      <p class="font-mono text-sm text-ink-faint">{{ c('week.no_topics') }}</p>
+    </div>
+    {% endif %}
+
+    {% for t in topics %}
+    <div class="bg-parchment-dim border border-parchment-line rounded-lg p-6">
+      <div class="flex items-start justify-between gap-4 mb-3">
+        <h3 class="font-display text-lg text-ink">{{ t.row.title }}</h3>
+        {% if can_manage_courses %}
+        <div class="flex gap-3 shrink-0 font-mono text-xs uppercase tracking-wide">
+          <button onclick="editTopicDialog_{{ t.row.id }}.showModal()" class="text-ink-faint hover:text-amber-dark">{{ c('week.edit_topic_btn') }}</button>
+          <form method="POST" action="{{ url_for('delete_topic', topic_id=t.row.id) }}" onsubmit="return confirm({{ c('week.delete_topic_confirm') | tojson }})">
+            <button class="text-ink-faint hover:text-rose">{{ c('week.delete_topic_btn') }}</button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+
+      {% if t.row.lesson_plan %}
+      <p class="font-body text-sm text-ink-light whitespace-pre-line mb-4">{{ t.row.lesson_plan }}</p>
+      {% endif %}
+
+      {% if t.key_points %}
+      <div class="mb-4">
+        <p class="font-mono text-[11px] uppercase tracking-widest text-ink-faint mb-2">{{ c('week.key_points_label') }}</p>
+        <ul class="space-y-1.5">
+          {% for kp in t.key_points %}
+          <li class="flex items-start gap-2 text-sm text-ink-light"><span class="text-amber mt-1">&#9670;</span><span>{{ kp }}</span></li>
+          {% endfor %}
+        </ul>
+      </div>
+      {% endif %}
+
+      <div class="mb-2">
+        <p class="font-mono text-[11px] uppercase tracking-widest text-ink-faint mb-2">{{ c('week.videos_label') }}</p>
+        {% if t.videos %}
+        <div class="flex flex-wrap gap-2 mb-3">
+          {% for v in t.videos %}
+          <div class="group flex items-center gap-2 bg-parchment-dim border border-parchment-line rounded-full pl-3 pr-1.5 py-1.5">
+            <a href="{{ v.url }}" target="_blank" rel="noopener" class="flex items-center gap-1.5 text-xs font-body text-ink-light hover:text-amber-dark">
+              <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              {{ v.title }}
+            </a>
+            {% if can_manage_courses %}
+            <form method="POST" action="{{ url_for('delete_video', video_id=v.id) }}">
+              <button class="text-ink-faint/50 hover:text-rose text-sm leading-none px-1">&times;</button>
+            </form>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </div>
+        {% endif %}
+        {% if can_manage_courses %}
+        <form method="POST" action="{{ url_for('add_video', topic_id=t.row.id) }}" class="flex gap-2 flex-wrap">
+          <input name="video_title" placeholder="{{ c('week.video_title_placeholder') }}" class="flex-1 min-w-[140px] px-2.5 py-1.5 text-xs rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-1 focus:ring-amber">
+          <input name="url" placeholder="{{ c('week.video_url_placeholder') }}" required class="flex-[2] min-w-[180px] px-2.5 py-1.5 text-xs rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-1 focus:ring-amber">
+          <button class="font-mono text-xs uppercase tracking-wide bg-amber text-ink px-3 py-1.5 rounded-md hover:bg-ink-light">{{ c('week.link_btn') }}</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+
+    <!-- Edit topic dialog -->
+    {% if can_manage_courses %}
+    <dialog id="editTopicDialog_{{ t.row.id }}" class="rounded-lg p-0 backdrop:bg-parchment/70 w-full max-w-lg">
+      <form method="POST" action="{{ url_for('edit_topic', topic_id=t.row.id) }}" class="bg-parchment p-6 rounded-lg border border-parchment-line">
+        <h3 class="font-display text-2xl text-ink mb-4">{{ c('week.edit_topic_btn') }} Topic</h3>
+        <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('week.topic_title_label') }}</label>
+        <input name="title" value="{{ t.row.title }}" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+        <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('week.lesson_plan_label') }}</label>
+        <textarea name="lesson_plan" rows="3" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">{{ t.row.lesson_plan or '' }}</textarea>
+        <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('week.key_points_input_label') }}</label>
+        <textarea name="key_points" rows="4" class="w-full mb-6 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">{{ t.row.key_points or '' }}</textarea>
+        <div class="flex justify-end gap-3">
+          <button type="button" onclick="editTopicDialog_{{ t.row.id }}.close()" class="font-mono text-sm uppercase tracking-wide text-ink-faint px-4 py-2 hover:text-ink">{{ c('week.cancel_btn') }}</button>
+          <button type="submit" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-5 py-2 rounded-md">{{ c('week.save_btn') }}</button>
+        </div>
+      </form>
+    </dialog>
+    {% endif %}
+    {% endfor %}
+  </div>
+
+  <!-- Sessions column -->
+  <div class="space-y-4">
+    <div class="flex items-center justify-between">
+      <h2 class="font-display text-xl text-ink">{{ c('session.heading') }}</h2>
+      {% if can_manage_courses %}
+      <button onclick="newSessionDialog.showModal()" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-xs uppercase tracking-wide px-4 py-2 rounded-md">{{ c('session.new_btn') }}</button>
+      {% endif %}
+    </div>
+    <p class="font-mono text-[11px] text-ink-faint uppercase tracking-wide -mt-3">{{ c('session.subheading') }}</p>
+
+    {% if not sessions %}
+    <div class="bg-parchment-dim border border-dashed border-parchment-line rounded-lg p-8 text-center">
+      <p class="font-mono text-sm text-ink-faint">{{ c('session.no_sessions') }}</p>
+    </div>
+    {% endif %}
+
+    {% for s in sessions %}
+    <div class="bg-parchment-dim border border-parchment-line rounded-lg p-5">
+      <div class="flex items-start justify-between gap-3 mb-1">
+        <div class="min-w-0">
+          <h3 class="font-display text-lg text-ink truncate">{{ s.row.trainer_name }}</h3>
+          <p class="font-mono text-[11px] text-ink-faint uppercase tracking-wide">
+            {% if s.row.session_date %}{{ s.row.session_date | friendly_date }}{% endif %}{% if s.row.location %} · {{ s.row.location }}{% endif %}
+          </p>
+        </div>
+        {% if can_manage_courses %}
+        <div class="flex gap-2 shrink-0 font-mono text-[11px] uppercase tracking-wide">
+          <button onclick="editSessionDialog_{{ s.row.id }}.showModal()" class="text-ink-faint hover:text-amber-dark">{{ c('session.edit_btn') }}</button>
+          <form method="POST" action="{{ url_for('delete_session', session_id=s.row.id) }}" onsubmit="return confirm({{ c('session.delete_confirm') | tojson }})">
+            <button class="text-ink-faint hover:text-rose">{{ c('session.delete_btn') }}</button>
+          </form>
+        </div>
+        {% endif %}
+      </div>
+      <p class="font-mono text-[11px] text-ink-faint uppercase tracking-wide mb-3">{{ s.attended }} {{ c('session.attended_suffix') }} · {{ s.signed }} {{ c('session.signed_suffix') }}</p>
+
+      <ul class="divide-y divide-parchment-line mb-4 max-h-64 overflow-y-auto">
+        {% for r in s.roster %}
+        <li class="py-2 flex items-center justify-between gap-2">
+          {% if can_manage_courses %}
+          <label class="flex items-center gap-2.5 text-sm text-ink-light cursor-pointer flex-1 min-w-0">
+            <input type="checkbox" class="attend-toggle w-4 h-4 accent-amber shrink-0" data-session="{{ s.row.id }}" data-person="{{ r.person.id }}" {% if r.attended %}checked{% endif %}>
+            <span class="truncate">{{ r.person.name }}</span>
+          </label>
+          {% else %}
+          <span class="flex items-center gap-2.5 text-sm text-ink-light flex-1 min-w-0">
+            <svg class="w-4 h-4 shrink-0 {% if r.attended %}text-sage{% else %}text-parchment-line{% endif %}" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 13l4 4L19 7"/></svg>
+            <span class="truncate">{{ r.person.name }}</span>
+          </span>
+          {% endif %}
+        </li>
+        {% endfor %}
+      </ul>
+
+      <a href="{{ url_for('signoff_sheet', session_id=s.row.id) }}" class="block text-center bg-amber hover:bg-amber-dark text-ink font-mono text-xs uppercase tracking-wide px-4 py-2.5 rounded-md mb-2">
+        {{ c('session.open_signoff_btn') }}
+      </a>
+
+      {% if can_manage_courses %}
+      <div class="mt-3 pt-3 border-t border-parchment-line space-y-2">
+        <a href="{{ url_for('download_signoff_template', session_id=s.row.id) }}" class="block text-center border border-amber text-amber hover:bg-amber hover:text-ink font-mono text-xs uppercase tracking-wide px-4 py-2.5 rounded-md transition-colors">
+          {{ c('session.download_signoff_btn') }}
+        </a>
+
+        {% if s.upload %}
+        <div class="flex items-center justify-between gap-2 text-sm bg-parchment/60 rounded-md px-3 py-2">
+          <a href="{{ url_for('view_signoff_scan', session_id=s.row.id) }}" class="text-amber-dark underline truncate">{{ c('session.signoff_uploaded_label') }}</a>
+          <form method="POST" action="{{ url_for('remove_signoff_scan', session_id=s.row.id) }}" onsubmit="return confirm('{{ c('session.signoff_remove_confirm') }}');">
+            <button type="submit" class="font-mono text-[10px] uppercase tracking-wide text-rose hover:underline shrink-0">{{ c('session.signoff_remove_btn') }}</button>
+          </form>
+        </div>
+        {% endif %}
+
+        <form method="POST" action="{{ url_for('upload_signoff_scan', session_id=s.row.id) }}" enctype="multipart/form-data" class="flex items-center gap-2">
+          <input type="file" name="signoff_file" accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.heic" class="flex-1 min-w-0 text-xs text-ink-light file:mr-2 file:py-1.5 file:px-2.5 file:rounded-md file:border file:border-amber-dark/40 file:font-mono file:text-[10px] file:uppercase file:bg-parchment-dim file:text-amber-dark file:cursor-pointer file:hover:bg-amber/10 file:transition-colors">
+          <button type="submit" class="font-mono text-[10px] uppercase tracking-wide bg-amber-dark hover:bg-amber text-white px-3 py-2 rounded-md shrink-0">
+            {% if s.upload %}{{ c('session.signoff_replace_btn') }}{% else %}{{ c('session.upload_signoff_btn') }}{% endif %}
+          </button>
+        </form>
+      </div>
+
+      <dialog id="editSessionDialog_{{ s.row.id }}" class="rounded-lg p-0 backdrop:bg-parchment/70 w-full max-w-md">
+        <form method="POST" action="{{ url_for('edit_session', session_id=s.row.id) }}" class="bg-parchment p-6 rounded-lg border border-parchment-line">
+          <h3 class="font-display text-2xl text-ink mb-4">{{ c('session.edit_dialog_title') }}</h3>
+          <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('session.trainer_label') }}</label>
+          <input name="trainer_name" value="{{ s.row.trainer_name }}" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+          <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('session.date_label') }}</label>
+          <input type="date" name="session_date" value="{{ s.row.session_date or '' }}" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+          <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('session.location_label') }}</label>
+          <input name="location" value="{{ s.row.location or '' }}" class="w-full mb-6 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+          <div class="flex justify-end gap-3">
+            <button type="button" onclick="editSessionDialog_{{ s.row.id }}.close()" class="font-mono text-sm uppercase tracking-wide text-ink-faint px-4 py-2 hover:text-ink">{{ c('week.cancel_btn') }}</button>
+            <button type="submit" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-5 py-2 rounded-md">{{ c('week.save_btn') }}</button>
+          </div>
+        </form>
+      </dialog>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</div>
+
+{% if can_manage_courses %}
+<dialog id="newSessionDialog" class="rounded-lg p-0 backdrop:bg-parchment/70 w-full max-w-md">
+  <form method="POST" action="{{ url_for('new_session', week_id=week.id) }}" class="bg-parchment p-6 rounded-lg border border-parchment-line">
+    <h3 class="font-display text-2xl text-ink mb-4">{{ c('session.new_dialog_title') }}</h3>
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('session.trainer_label') }}</label>
+    <input name="trainer_name" placeholder="e.g. Kendrick R." class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('session.date_label') }}</label>
+    <input type="date" name="session_date" value="{{ week.start_date or '' }}" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('session.location_label') }}</label>
+    <input name="location" class="w-full mb-6 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+    <div class="flex justify-end gap-3">
+      <button type="button" onclick="newSessionDialog.close()" class="font-mono text-sm uppercase tracking-wide text-ink-faint px-4 py-2 hover:text-ink">{{ c('week.cancel_btn') }}</button>
+      <button type="submit" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-5 py-2 rounded-md">{{ c('session.new_btn') }}</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+
+{% if can_manage_courses %}
+<dialog id="newTopicDialog" class="rounded-lg p-0 backdrop:bg-parchment/70 w-full max-w-lg">
+  <form method="POST" action="{{ url_for('new_topic', week_id=week.id) }}" class="bg-parchment p-6 rounded-lg border border-parchment-line">
+    <h3 class="font-display text-2xl text-ink mb-4">{{ c('week.new_topic_dialog_title') }}</h3>
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('week.topic_title_label') }}</label>
+    <input name="title" placeholder="{{ c('week.topic_title_placeholder') }}" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('week.lesson_plan_label') }}</label>
+    <textarea name="lesson_plan" rows="3" placeholder="{{ c('week.lesson_plan_placeholder') }}" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber"></textarea>
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('week.key_points_input_label') }}</label>
+    <textarea name="key_points" rows="4" placeholder="{{ c('week.key_points_placeholder') }}" class="w-full mb-6 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber"></textarea>
+    <div class="flex justify-end gap-3">
+      <button type="button" onclick="newTopicDialog.close()" class="font-mono text-sm uppercase tracking-wide text-ink-faint px-4 py-2 hover:text-ink">{{ c('week.cancel_btn') }}</button>
+      <button type="submit" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-5 py-2 rounded-md">{{ c('week.add_topic_submit') }}</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="editWeekDialog" class="rounded-lg p-0 backdrop:bg-parchment/70 w-full max-w-md">
+  <form method="POST" action="{{ url_for('edit_week', week_id=week.id) }}" class="bg-parchment p-6 rounded-lg border border-parchment-line">
+    <h3 class="font-display text-2xl text-ink mb-4">{{ c('week.edit_week_dialog_title') }}</h3>
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('index.field_title') }}</label>
+    <input name="title" value="{{ week.title }}" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('index.field_date') }}</label>
+    <input type="date" name="start_date" value="{{ week.start_date or '' }}" class="w-full mb-4 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">
+    <label class="block font-mono text-xs uppercase tracking-wide text-ink-faint mb-1">{{ c('week.notes_label') }}</label>
+    <textarea name="notes" rows="3" class="w-full mb-6 px-3 py-2 rounded-md border border-parchment-line bg-parchment-dim focus:outline-none focus:ring-2 focus:ring-amber">{{ week.notes or '' }}</textarea>
+    <div class="flex justify-end gap-3">
+      <button type="button" onclick="editWeekDialog.close()" class="font-mono text-sm uppercase tracking-wide text-ink-faint px-4 py-2 hover:text-ink">{{ c('week.cancel_btn') }}</button>
+      <button type="submit" class="bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-5 py-2 rounded-md">{{ c('week.save_btn') }}</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
+
+<script>
+document.querySelectorAll('.attend-toggle').forEach(function(box) {
+  box.addEventListener('change', function() {
+    const sessionId = this.dataset.session;
+    const personId = this.dataset.person;
+    const attended = this.checked ? '1' : '0';
+    fetch(`/session/${sessionId}/attendance/toggle`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: `person_id=${personId}&attended=${attended}`
+    });
+  });
+});
+</script>
+{% endblock %}

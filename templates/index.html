@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Logicore Invoice Suite</title>
+  <title>Logicore Portal</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
   <!-- Tailwind is compiled ahead of time (see build/) instead of loaded from
@@ -29,7 +29,7 @@
     <img src="/static/logicore_mark.png" alt="Logicore" />
     <div>
       <div class="brand-word">LOGICORE</div>
-      <div class="brand-sub">Invoice Suite</div>
+      <div class="brand-sub">Portal</div>
     </div>
   </div>
 
@@ -46,10 +46,10 @@
       <span>SMS NonConforming</span>
     </button>
 
-    <button class="side-link portal-nav-btn text-steel" data-portal="tbd1" id="portal-nav-tbd1" onclick="showPortalPage('tbd1')">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-2.5 2-2.5 3.5M12 17h.01"/></svg>
-      <span>TBD 1</span>
-    </button>
+    <a class="side-link text-steel" href="/training-tracker/" id="portal-nav-training-tracker">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4 3 8l9 4 9-4-9-4Z"/><path d="M7 10.5V16c0 1 2.2 2.5 5 2.5s5-1.5 5-2.5v-5.5"/><path d="M21 8v6"/></svg>
+      <span>Training Tracker</span>
+    </a>
 
     <button class="side-link portal-nav-btn text-steel" data-portal="tbd2" id="portal-nav-tbd2" onclick="showPortalPage('tbd2')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 0 1 5 0c0 1.5-2.5 2-2.5 3.5M12 17h.01"/></svg>
@@ -113,10 +113,13 @@
   </div>
 
 <!-- ══════════════════════════════════════════════════════════
-     SECTION: PROMETHEAN
+     PORTAL TAB: INVOICE GENERATOR (existing app, unchanged below)
 ══════════════════════════════════════════════════════════ -->
 <div id="portal-content-invoice-generator" class="relative z-10">
 
+<!-- ══════════════════════════════════════════════════════════
+     SECTION: PROMETHEAN
+══════════════════════════════════════════════════════════ -->
 <div id="page-promethean" class="relative z-10">
 
 <!-- ══════════════════════════════════════════════════════════
@@ -1419,40 +1422,6 @@
 
 </div><!-- /page-philips -->
 
-</div><!-- /portal-content-invoice-generator -->
-
-<!-- ══════════════════════════════════════════════════════════
-     SECTION: SMS NONCONFORMING (placeholder — no backend yet)
-══════════════════════════════════════════════════════════ -->
-<div id="portal-content-sms-nonconforming" class="hidden relative z-10 max-w-5xl mx-auto px-6 py-10 page-content">
-  <div class="rounded-2xl border border-steel/30 bg-ink-50 px-8 py-16 text-center">
-    <div class="text-3xl mb-3">🚧</div>
-    <h2 class="text-lg font-semibold text-slate-100 mb-2">SMS NonConforming</h2>
-    <p class="text-sm text-steel max-w-md mx-auto">This module hasn't been built yet. When it's ready, it'll live here as its own portal tab — same pattern as the Invoice Generator tab next to it.</p>
-  </div>
-</div>
-
-<!-- ══════════════════════════════════════════════════════════
-     SECTION: TBD 1 (placeholder — no backend yet)
-══════════════════════════════════════════════════════════ -->
-<div id="portal-content-tbd1" class="hidden relative z-10 max-w-5xl mx-auto px-6 py-10 page-content">
-  <div class="rounded-2xl border border-steel/30 bg-ink-50 px-8 py-16 text-center">
-    <div class="text-3xl mb-3">🚧</div>
-    <h2 class="text-lg font-semibold text-slate-100 mb-2">TBD 1</h2>
-    <p class="text-sm text-steel max-w-md mx-auto">Reserved for a future project. Nothing built here yet.</p>
-  </div>
-</div>
-
-<!-- ══════════════════════════════════════════════════════════
-     SECTION: TBD 2 (placeholder — no backend yet)
-══════════════════════════════════════════════════════════ -->
-<div id="portal-content-tbd2" class="hidden relative z-10 max-w-5xl mx-auto px-6 py-10 page-content">
-  <div class="rounded-2xl border border-steel/30 bg-ink-50 px-8 py-16 text-center">
-    <div class="text-3xl mb-3">🚧</div>
-    <h2 class="text-lg font-semibold text-slate-100 mb-2">TBD 2</h2>
-    <p class="text-sm text-steel max-w-md mx-auto">Reserved for a future project. Nothing built here yet.</p>
-  </div>
-</div>
 
 <footer class="relative z-10 border-t border-steel/20 mt-16">
   <div class="max-w-5xl mx-auto px-6 py-4 flex items-center justify-between">
@@ -1462,6 +1431,26 @@
     <span class="font-mono text-xs text-steel/40">Flask + Tailwind v9.0</span>
   </div>
 </footer>
+
+</div><!-- /portal-content-invoice-generator -->
+
+<!-- ══════════════════════════════════════════════════════════
+     PORTAL TAB: SMS NONCONFORMING (placeholder)
+══════════════════════════════════════════════════════════ -->
+<div id="portal-content-sms-nonconforming" class="hidden relative z-10 max-w-3xl mx-auto px-6 py-24 text-center">
+  <div class="w-14 h-14 rounded-xl bg-ink-100 border border-steel/30 flex items-center justify-center mx-auto mb-5 text-2xl">🛠</div>
+  <h1 class="text-2xl font-semibold text-slate-100 tracking-tight mb-2">SMS NonConforming</h1>
+  <p class="text-steel text-sm max-w-md mx-auto">Not built yet — this tab is reserved for the next module in the portal.</p>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     PORTAL TAB: TBD 2 (placeholder)
+══════════════════════════════════════════════════════════ -->
+<div id="portal-content-tbd2" class="hidden relative z-10 max-w-3xl mx-auto px-6 py-24 text-center">
+  <div class="w-14 h-14 rounded-xl bg-ink-100 border border-steel/30 flex items-center justify-center mx-auto mb-5 text-2xl">🛠</div>
+  <h1 class="text-2xl font-semibold text-slate-100 tracking-tight mb-2">TBD 2</h1>
+  <p class="text-steel text-sm max-w-md mx-auto">Not built yet — this tab is reserved for a future module.</p>
+</div>
 
 </main>
 </div><!-- /app-shell -->

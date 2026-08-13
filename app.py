@@ -8,6 +8,7 @@ from datetime import datetime
 
 import pandas as pd
 from flask import Flask, render_template, request, jsonify, Response, send_file, session as flask_session
+from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
@@ -18,6 +19,22 @@ UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 sys.path.insert(0, str(Path(__file__).parent))
+
+# ── Training Tracker mount ──────────────────────────────────────────────────
+# training_tracker/app.py is a complete, separate Flask app (own login/
+# session handling, own SQLite DB) — not a blueprint of this app, because it
+# needs its own multi-page navigation and auth that don't fit the Invoice
+# Generator's single-page-with-hidden-divs pattern. It's composed in at the
+# WSGI level via DispatcherMiddleware rather than imported as a blueprint,
+# so its ~1700 lines of routes/session logic didn't need to be rewritten —
+# it runs exactly as it does standalone, just mounted under a path prefix.
+# Its sidebar entry in templates/index.html is a plain <a href="/training-tracker/">
+# (full page navigation), not one of the showPortalPage() JS-toggled tabs.
+from training_tracker.app import app as training_tracker_app, init_db as _tt_init_db
+_tt_init_db()
+app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {
+    "/training-tracker": training_tracker_app.wsgi_app,
+})
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Per-browser-session state
@@ -36,25 +53,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 # browser's session id — and therefore its in-progress analysis — survives
 # the app being relaunched (as opposed to `app.secret_key = os.urandom(...)`,
 # which would invalidate every open session on every restart).
-# On a hosted platform (Render, etc.) the filesystem is typically ephemeral —
-# it resets on every deploy/restart, so a file-based secret would silently
-# rotate and invalidate every open session each time the service restarts.
-# Prefer an explicit FLASK_SECRET_KEY env var when one is set (set this in
-# Render's dashboard for stable sessions across restarts); fall back to the
-# local file-based approach for the .bat/local-desktop use case, where the
-# disk really is stable across relaunches.
 SESSION_SECRET_FILE = Path(__file__).parent / ".flask_secret"
-_env_secret = os.environ.get("FLASK_SECRET_KEY")
-if _env_secret:
-    app.secret_key = _env_secret.encode("utf-8")
-elif SESSION_SECRET_FILE.exists():
+if SESSION_SECRET_FILE.exists():
     app.secret_key = SESSION_SECRET_FILE.read_bytes()
 else:
     app.secret_key = os.urandom(32)
-    try:
-        SESSION_SECRET_FILE.write_bytes(app.secret_key)
-    except OSError:
-        pass  # read-only filesystem (some hosted environments) — fine, key just won't persist across restarts
+    SESSION_SECRET_FILE.write_bytes(app.secret_key)
 
 
 def _sid() -> str:
@@ -472,12 +476,6 @@ APP_VERSION = "9.0"
 @app.route("/version")
 def version():
     return jsonify({"version": APP_VERSION, "modules": ["workshop", "storage", "philips", "tcl", "amc"]})
-
-
-@app.route("/healthz")
-def healthz():
-    """Render (and similar hosts) hit this to confirm the service is alive."""
-    return jsonify({"ok": True}), 200
 
 @app.route("/")
 def index():
@@ -1608,26 +1606,11 @@ def set_fedex_shipment_defaults():
         return jsonify({"ok": False, "error": str(e)}), 400
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# Local launch vs. hosted deploy (Render, etc.)
-# ══════════════════════════════════════════════════════════════════════════════
-# Locally (double-clicking Launch_Invoice_Generator.bat) this still opens a
-# browser tab against a fixed localhost port, same as before. On Render (or
-# any host that sets $PORT and runs this under gunicorn — see Procfile) this
-# __main__ block never executes at all; gunicorn imports `app` directly. The
-# RENDER env var is set automatically by Render's build/runtime environment,
-# so it's a reliable signal to skip the local-only convenience behavior
-# (opening a browser) even if someone does run `python app.py` on a server.
-IS_HOSTED = bool(os.environ.get("RENDER") or os.environ.get("PORT"))
-
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    host = "0.0.0.0" if IS_HOSTED else "127.0.0.1"
-    url = f"http://127.0.0.1:{port}"
-    print("  Modules active: Workshop Invoice + Storage Invoice + Philips Warehouse Invoice + TCL Warehouse Invoice + AMC Warehouse Invoice + FedEx Shipment Upload")
-    if not IS_HOSTED:
-        threading.Timer(1.2, lambda: webbrowser.open(url)).start()
-    print(f"\n  Invoice Generator running → {url}\n  Press Ctrl+C to stop.\n")
-    app.run(debug=False, host=host, port=port)
+    url = "http://127.0.0.1:5000"
+    print("  Modules active: Workshop Invoice + Storage Invoice + Philips Warehouse Invoice + TCL Warehouse Invoice + AMC Warehouse Invoice + FedEx Shipment Upload + Training Tracker")
+    threading.Timer(1.2, lambda: webbrowser.open(url)).start()
+    print(f"\n  Logicore Portal running → {url}\n  Press Ctrl+C to stop.\n")
+    app.run(debug=False, port=5000)
 
 

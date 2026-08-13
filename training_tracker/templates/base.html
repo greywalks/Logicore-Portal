@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}{{ c('site.name') }}{% endblock %}</title>
+<meta name="author" content="{{ c('site.name') }}">
+<meta name="application-name" content="{{ c('site.name') }}">
+<meta name="description" content="{% block meta_description %}{{ c('site.tagline') }} — {{ c('site.name') }}{% endblock %}">
+<script src="https://cdn.tailwindcss.com"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<!-- Colors/fonts here mirror the Logicore Portal's own design tokens
+     (see /static/css/app.css --accent / --bg / --font-display) so this page
+     reads as part of the same product. Kept on the Tailwind CDN script
+     (rather than the portal's precompiled tailwind.css) because the
+     Appearance admin panel lets an admin change these hex values at
+     runtime from the database — a precompiled stylesheet can't do that. -->
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        colors: {
+          ink: {
+            DEFAULT: '{{ theme.ink.DEFAULT }}',
+            light: '{{ theme.ink.light }}',
+            faint: '{{ theme.ink.faint }}',
+          },
+          parchment: {
+            DEFAULT: '{{ theme.parchment.DEFAULT }}',
+            dim: '{{ theme.parchment.dim }}',
+            line: '{{ theme.parchment.line }}',
+          },
+          amber: {
+            DEFAULT: '{{ theme.amber.DEFAULT }}',
+            dark: '{{ theme.amber.dark }}',
+            light: '{{ theme.amber.light }}',
+          },
+          sage: {
+            DEFAULT: '{{ theme.sage.DEFAULT }}',
+            dark: '{{ theme.sage.dark }}',
+          },
+          rose: {
+            DEFAULT: '{{ theme.rose.DEFAULT }}',
+            dark: '{{ theme.rose.dark }}',
+          },
+        },
+        fontFamily: {
+          display: ['"Space Grotesk"', 'sans-serif'],
+          body: ['"Inter"', 'sans-serif'],
+          mono: ['"IBM Plex Mono"', 'monospace'],
+        },
+      },
+    },
+  };
+</script>
+<style>
+  body { background-color: {{ theme.parchment.DEFAULT }}; }
+  .ruled-line {
+    background-image: repeating-linear-gradient(transparent, transparent 34px, {{ theme.parchment.line }} 35px);
+  }
+  ::-webkit-scrollbar { width: 10px; }
+  ::-webkit-scrollbar-thumb { background: {{ theme.parchment.line }}; border-radius: 6px; }
+  [x-cloak] { display: none !important; }
+  /* Fixed to the portal's own --sidebar-bg / --text so the header stays a
+     consistent dark bar regardless of the admin-editable ink/parchment
+     values above (which now drive the main canvas, not this bar). */
+  .tt-header { background: #080a0e; color: #eef2f6; }
+</style>
+</head>
+<body class="font-body text-ink antialiased min-h-screen flex flex-col">
+
+<header class="tt-header border-b-4 border-amber">
+  <div class="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between gap-4">
+    <a href="/" class="flex items-center shrink-0" title="Back to Logicore Portal">
+      <img src="/static/logicore_mark.png" alt="Logicore" class="h-6 w-auto opacity-80" />
+    </a>
+    <span class="w-px h-5 bg-white/15 shrink-0"></span>
+    <a href="{{ url_for('index') }}" class="flex items-center gap-3 group flex-1 min-w-0">
+      <span class="font-display text-2xl tracking-tight group-hover:text-amber-light transition-colors">{{ c('site.name') }}</span>
+      <span class="hidden sm:inline-block font-mono text-[11px] uppercase tracking-widest text-amber-light/80 border border-amber/40 rounded-full px-2 py-0.5">{{ c('site.tagline') }}</span>
+    </a>
+    <nav class="flex items-center gap-6 font-mono text-sm uppercase tracking-wide">
+      {% if user %}
+      <a href="{{ url_for('index') }}" class="hover:text-amber-light transition-colors {% if request.endpoint == 'index' %}text-amber-light{% endif %}">{{ c('nav.weeks') }}</a>
+      <a href="{{ url_for('people_page') }}" class="hover:text-amber-light transition-colors {% if request.endpoint == 'people_page' %}text-amber-light{% endif %}">{{ c('nav.roster') }}</a>
+      {% if is_admin %}
+      <a href="{{ url_for('admin_content') }}" class="flex items-center gap-1.5 hover:text-amber-light transition-colors {% if request.endpoint == 'admin_content' %}text-amber-light{% endif %}">
+        <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+        {{ c('nav.admin') }}
+      </a>
+      {% endif %}
+      <span class="w-px h-4 bg-parchment/20"></span>
+      <a href="{{ url_for('account') }}" class="hover:text-amber-light transition-colors {% if request.endpoint == 'account' %}text-amber-light{% endif %}" title="{{ user.role | capitalize }}">{{ user.username }}</a>
+      <form method="POST" action="{{ url_for('logout') }}">
+        <button type="submit" class="hover:text-rose transition-colors normal-case font-mono text-sm">{{ c('nav.logout') }}</button>
+      </form>
+      {% else %}
+      <a href="{{ url_for('login') }}" class="hover:text-amber-light transition-colors">{{ c('nav.login') }}</a>
+      {% endif %}
+    </nav>
+  </div>
+</header>
+
+{% if using_default_admin_password %}
+<div class="bg-rose text-white">
+  <div class="max-w-6xl mx-auto px-6 py-2.5 font-mono text-xs uppercase tracking-wide flex items-center justify-between gap-4">
+    <span>You're still using the default admin/admin login — change it now.</span>
+    <a href="{{ url_for('account') }}" class="underline shrink-0">Change password</a>
+  </div>
+</div>
+{% endif %}
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  <div class="max-w-6xl mx-auto w-full px-6 pt-4">
+    {% for category, m in messages %}
+    {% if category == 'error' %}
+    <div class="bg-rose/10 border border-rose text-rose-dark px-4 py-2 rounded-md font-mono text-sm mb-2">{{ m }}</div>
+    {% else %}
+    <div class="bg-sage/10 border border-sage text-sage-dark px-4 py-2 rounded-md font-mono text-sm mb-2">{{ m }}</div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {% endif %}
+{% endwith %}
+
+<main class="flex-1 max-w-6xl mx-auto w-full px-6 py-8">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="border-t border-parchment-line mt-12">
+  <div class="max-w-6xl mx-auto px-6 py-6 font-mono text-xs text-ink-faint uppercase tracking-widest">
+    {{ c('site.footer') }}
+  </div>
+</footer>
+
+</body>
+</html>
