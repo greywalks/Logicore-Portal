@@ -2,7 +2,7 @@
 Promethean Workshop Invoice Generator — Flask Backend
 """
 
-import os, sys, shutil, queue, threading, json, uuid, webbrowser
+import os, sys, shutil, queue, threading, json, uuid, webbrowser, io
 from pathlib import Path
 from datetime import datetime
 
@@ -12,6 +12,7 @@ from werkzeug.middleware.dispatcher import DispatcherMiddleware
 from werkzeug.security import check_password_hash
 
 import portal_auth
+import nonconforming
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
@@ -66,6 +67,9 @@ app.secret_key = portal_auth.load_or_create_secret()
 
 portal_auth.init_db()
 app.teardown_appcontext(portal_auth.close_db)
+
+nonconforming.init_db()
+app.teardown_appcontext(nonconforming.close_db)
 
 
 # ── Portal-wide login gate ──────────────────────────────────────────────────
@@ -124,6 +128,15 @@ ROUTE_SECTIONS = {
     # Config
     "get_serial_rules": ("invoice-generator", "config"),
     "save_serial_rules": ("invoice-generator", "config"),
+    # SMS NonConforming
+    "nc_list_items": ("sms-nonconforming", None),
+    "nc_create_item": ("sms-nonconforming", None),
+    "nc_get_item": ("sms-nonconforming", None),
+    "nc_update_item": ("sms-nonconforming", None),
+    "nc_delete_item": ("sms-nonconforming", None),
+    "nc_export": ("sms-nonconforming", None),
+    "nc_label": ("sms-nonconforming", None),
+    "nc_next_number": ("sms-nonconforming", None),
 }
 
 
@@ -205,12 +218,13 @@ def admin_permissions_new_user():
         return redirect(url_for("index"))
     username = request.form.get("username", "").strip()
     password = request.form.get("password", "")
+    initials = request.form.get("initials", "").strip()
     is_superadmin = request.form.get("is_superadmin") == "on"
     if not username or not password:
         flash("Username and password are required.", "error")
     else:
         try:
-            portal_auth.create_user(username, password, is_superadmin)
+            portal_auth.create_user(username, password, is_superadmin, initials=initials)
             flash(f"Created user {username}.", "success")
         except Exception:
             flash("That username is already taken.", "error")
@@ -243,6 +257,18 @@ def admin_permissions_reset_password(user_id):
     else:
         portal_auth.update_user(user_id, password=password)
         flash("Password updated.", "success")
+    return redirect(url_for("admin_permissions"))
+
+
+@app.route("/admin/permissions/users/<int:user_id>/initials", methods=["POST"])
+def admin_permissions_set_initials(user_id):
+    user = portal_auth.get_current_user()
+    if not user or not user["is_superadmin"]:
+        flash("You don't have permission to do that.", "error")
+        return redirect(url_for("index"))
+    initials = request.form.get("initials", "").strip()
+    portal_auth.update_user(user_id, initials=initials)
+    flash("Initials updated.", "success")
     return redirect(url_for("admin_permissions"))
 
 
@@ -1878,6 +1904,106 @@ def set_fedex_shipment_defaults():
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 400
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SMS NonConforming
+# ══════════════════════════════════════════════════════════════════════════════
+# One SQLite table (nonconforming.py) behind a small CRUD/search/export API.
+# No two-step analyze→confirm flow here — this is a live database, not a
+# file-upload builder, so every route just talks straight to nonconforming.py.
+
+@app.route("/nonconforming/api/items")
+def nc_list_items():
+    q = request.args.get("q", "").strip() or None
+    status = request.args.get("status", "").strip() or None
+    limit = min(int(request.args.get("limit", 200)), 1000)
+    offset = int(request.args.get("offset", 0))
+    items = nonconforming.list_items(q=q, status=status, limit=limit, offset=offset)
+    total = nonconforming.count_items(q=q, status=status)
+    user = portal_auth.get_current_user()
+    return jsonify({
+        "ok": True,
+        "items": items,
+        "total": total,
+        "statuses": nonconforming.distinct_statuses(),
+        "next_number_preview": nonconforming.preview_next_number(portal_auth.initials_for(user)),
+    })
+
+
+@app.route("/nonconforming/api/next_number")
+def nc_next_number():
+    user = portal_auth.get_current_user()
+    return jsonify({"ok": True, "preview": nonconforming.preview_next_number(portal_auth.initials_for(user))})
+
+
+@app.route("/nonconforming/api/items", methods=["POST"])
+def nc_create_item():
+    try:
+        user = portal_auth.get_current_user()
+        body = request.get_json(force=True)
+        item = nonconforming.add_item(body, user)
+        return jsonify({"ok": True, "item": item})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/nonconforming/api/items/<int:item_id>")
+def nc_get_item(item_id):
+    item = nonconforming.get_item(item_id)
+    if not item:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    return jsonify({"ok": True, "item": item})
+
+
+@app.route("/nonconforming/api/items/<int:item_id>", methods=["PUT", "PATCH"])
+def nc_update_item(item_id):
+    try:
+        body = request.get_json(force=True)
+        item = nonconforming.update_item(item_id, body)
+        if not item:
+            return jsonify({"ok": False, "error": "Not found"}), 404
+        return jsonify({"ok": True, "item": item})
+    except ValueError as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 400
+
+
+@app.route("/nonconforming/api/items/<int:item_id>", methods=["DELETE"])
+def nc_delete_item(item_id):
+    ok = nonconforming.delete_item(item_id)
+    if not ok:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    return jsonify({"ok": True})
+
+
+@app.route("/nonconforming/api/export")
+def nc_export():
+    q = request.args.get("q", "").strip() or None
+    status = request.args.get("status", "").strip() or None
+    rows = nonconforming.list_items(q=q, status=status, limit=100000, offset=0)
+    buf = nonconforming.export_xlsx(rows)
+    fname = f"SMS_NonConforming_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    return send_file(buf, as_attachment=True, download_name=fname,
+                      mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+
+@app.route("/nonconforming/api/items/<int:item_id>/label")
+def nc_label(item_id):
+    """Returns the raw ZPL for this item's 3x4 label — the frontend either
+    hands this straight to Zebra Browser Print, or offers it as a .zpl
+    download for machines without Browser Print installed."""
+    item = nonconforming.get_item(item_id)
+    if not item:
+        return jsonify({"ok": False, "error": "Not found"}), 404
+    zpl = nonconforming.build_zpl(item)
+    if request.args.get("download") == "1":
+        buf = io.BytesIO(zpl.encode("utf-8"))
+        return send_file(buf, as_attachment=True, download_name=f"{item['number']}.zpl", mimetype="text/plain")
+    return jsonify({"ok": True, "zpl": zpl, "number": item["number"]})
 
 
 if __name__ == "__main__":

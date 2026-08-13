@@ -159,6 +159,10 @@
             <label>Password</label>
             <input type="password" name="password" required>
           </div>
+          <div>
+            <label>Initials <span style="text-transform:none;">(for SMS NonConforming, e.g. MS)</span></label>
+            <input type="text" name="initials" maxlength="4" style="text-transform:uppercase;">
+          </div>
         </div>
         <div class="checkline" style="margin-top:0.75rem;">
           <input type="checkbox" id="new-superadmin" name="is_superadmin">
@@ -175,6 +179,10 @@
       <div class="user-head">
         <div class="user-name">{{ u.username }}{% if u.is_superadmin %}<span class="badge">Superadmin</span>{% endif %}</div>
         <div class="actions-row" style="margin-top:0;">
+          <form class="inline-form" method="POST" action="{{ url_for('admin_permissions_set_initials', user_id=u.id) }}">
+            <input type="text" name="initials" placeholder="Initials" maxlength="4" value="{{ u.initials or '' }}" style="width:90px; text-transform:uppercase;">
+            <button type="submit" class="btn btn-ghost">Save initials</button>
+          </form>
           <form class="inline-form" method="POST" action="{{ url_for('admin_permissions_reset_password', user_id=u.id) }}">
             <input type="password" name="password" placeholder="New password">
             <button type="submit" class="btn btn-ghost">Reset password</button>

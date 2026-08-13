@@ -121,6 +121,13 @@ def init_db():
         """
     )
     db.commit()
+    # Migration: `initials` was added after the users table already shipped
+    # (used by SMS NonConforming to build the "Number" field, e.g. MS26-1).
+    # ALTER TABLE ADD COLUMN has no "IF NOT EXISTS" in SQLite, so probe first.
+    existing_cols = {row[1] for row in db.execute("PRAGMA table_info(users)")}
+    if "initials" not in existing_cols:
+        db.execute("ALTER TABLE users ADD COLUMN initials TEXT")
+        db.commit()
     # BEGIN IMMEDIATE + COUNT-check guards against a duplicate-insert race if
     # two workers boot at once (same pattern training_tracker's init_db used
     # for its own default admin, before that table existed here).
@@ -322,11 +329,12 @@ def clear_permission(user_id, section, subsection=None):
     db.commit()
 
 
-def create_user(username, password, is_superadmin=False):
+def create_user(username, password, is_superadmin=False, initials=None):
     db = get_db()
     db.execute(
-        "INSERT INTO users (username, password_hash, is_superadmin) VALUES (?, ?, ?)",
-        (username, generate_password_hash(password), 1 if is_superadmin else 0),
+        "INSERT INTO users (username, password_hash, is_superadmin, initials) VALUES (?, ?, ?, ?)",
+        (username, generate_password_hash(password), 1 if is_superadmin else 0,
+         (initials or "").strip().upper() or None),
     )
     db.commit()
 
@@ -337,7 +345,7 @@ def delete_user(user_id):
     db.commit()
 
 
-def update_user(user_id, password=None, is_superadmin=None):
+def update_user(user_id, password=None, is_superadmin=None, initials=None):
     db = get_db()
     if password:
         db.execute(
@@ -349,4 +357,26 @@ def update_user(user_id, password=None, is_superadmin=None):
             "UPDATE users SET is_superadmin = ? WHERE id = ?",
             (1 if is_superadmin else 0, user_id),
         )
+    if initials is not None:
+        db.execute(
+            "UPDATE users SET initials = ? WHERE id = ?",
+            (initials.strip().upper() or None, user_id),
+        )
     db.commit()
+
+
+def initials_for(user):
+    """Best-effort initials for a user — explicit `initials` column first,
+    falling back to a derivation from the username so SMS NonConforming
+    always has *something* to build a Number from even before an admin has
+    set it explicitly. Used only as a fallback; admins should set it."""
+    if not user:
+        return "XX"
+    explicit = (user.get("initials") or "").strip().upper() if isinstance(user, dict) else (user["initials"] or "").strip().upper()
+    if explicit:
+        return explicit
+    username = user["username"] if not isinstance(user, dict) else user.get("username", "")
+    parts = [p for p in username.replace(".", " ").replace("_", " ").replace("-", " ").split() if p]
+    if len(parts) >= 2:
+        return (parts[0][0] + parts[1][0]).upper()
+    return (username[:2] or "XX").upper()

@@ -1472,12 +1472,188 @@
 </div><!-- /portal-content-invoice-generator -->
 
 <!-- ══════════════════════════════════════════════════════════
-     PORTAL TAB: SMS NONCONFORMING (placeholder)
+     PORTAL TAB: SMS NONCONFORMING
 ══════════════════════════════════════════════════════════ -->
-<div id="portal-content-sms-nonconforming" class="relative z-10 max-w-3xl mx-auto px-6 py-24 text-center{% if default_portal!='sms-nonconforming' %} hidden{% endif %}">
-  <div class="w-14 h-14 rounded-xl bg-ink-100 border border-steel/30 flex items-center justify-center mx-auto mb-5 text-2xl">🛠</div>
-  <h1 class="text-2xl font-semibold text-slate-100 tracking-tight mb-2">SMS NonConforming</h1>
-  <p class="text-steel text-sm max-w-md mx-auto">Not built yet — this tab is reserved for the next module in the portal.</p>
+<div id="portal-content-sms-nonconforming" class="relative z-10 max-w-6xl mx-auto px-6 py-10{% if default_portal!='sms-nonconforming' %} hidden{% endif %}">
+
+  <div class="flex items-center justify-between mb-6 flex-wrap gap-3">
+    <div>
+      <h1 class="text-2xl font-semibold text-slate-100 tracking-tight">SMS NonConforming</h1>
+      <p class="text-steel text-sm mt-1">Units received at the warehouse that don't conform — logged, searchable, exportable.</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span class="font-mono text-xs text-steel">Filing as</span>
+      <span class="font-mono text-xs bg-ink-100 border border-steel/40 rounded px-2 py-1 text-accent" id="nc-filer-badge">—</span>
+    </div>
+  </div>
+
+  <!-- Add item -->
+  <div class="bg-ink-50 border border-steel/30 rounded-lg p-6 mb-8">
+    <div class="flex items-center gap-3 mb-4">
+      <span class="font-mono text-xs text-accent uppercase tracking-widest">New Item</span>
+      <div class="flex-1 h-px bg-steel/40"></div>
+      <span class="font-mono text-xs text-steel">Will be filed as <span class="text-accent" id="nc-next-number">—</span></span>
+    </div>
+
+    <form id="nc-add-form">
+      <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Model # <span class="text-warn">*</span></label>
+          <input type="text" name="model" required placeholder="Scan or type"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Serial # <span class="text-warn">*</span></label>
+          <input type="text" name="serial" required placeholder="Scan from back of unit"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Carrier <span class="text-warn">*</span></label>
+          <input type="text" name="carrier" required list="nc-carrier-list" placeholder="e.g. Pilot, AIT, FedEx"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+          <datalist id="nc-carrier-list"></datalist>
+        </div>
+
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Ticket #</label>
+          <input type="text" name="ticket_no" placeholder="From box / paperwork"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">RA #</label>
+          <input type="text" name="ra_no" placeholder="From box / paperwork"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Tracking</label>
+          <input type="text" name="tracking" placeholder="From box / paperwork"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+
+        <div class="md:col-span-2">
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Address</label>
+          <input type="text" name="address" placeholder="From box / paperwork"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Store #</label>
+          <input type="text" name="store_no" placeholder="If on paperwork"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Origin Company</label>
+          <input type="text" name="origin_company" placeholder="Where the TV came from"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Status</label>
+          <input type="text" name="status" list="nc-status-list" placeholder="e.g. Received"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+          <datalist id="nc-status-list"></datalist>
+        </div>
+        <div>
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">USSI Resolution Confirmation</label>
+          <input type="text" name="ussi_resolution" placeholder="TBD"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+
+        <div class="md:col-span-3">
+          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Addtl Info</label>
+          <input type="text" name="addtl_info" placeholder="Short note"
+            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+        </div>
+      </div>
+
+      <div id="nc-add-error" class="hidden mt-4 text-xs text-rose-400 font-mono"></div>
+
+      <div class="mt-5 flex items-center gap-3">
+        <button type="submit" id="nc-add-btn"
+          class="bg-accent text-ink font-semibold py-2.5 px-6 rounded-lg text-sm hover:bg-accent-dim transition-all">
+          File Item →
+        </button>
+        <span class="text-xs text-steel font-mono" id="nc-add-status"></span>
+      </div>
+    </form>
+  </div>
+
+  <!-- Records -->
+  <div class="bg-ink-50 border border-steel/30 rounded-lg p-6">
+    <div class="flex items-center gap-3 mb-4 flex-wrap">
+      <span class="font-mono text-xs text-accent uppercase tracking-widest">Records</span>
+      <div class="flex-1 h-px bg-steel/40 min-w-[20px]"></div>
+      <input type="text" id="nc-search" placeholder="Search number, model, serial, ticket, address…"
+        class="bg-ink-100 border border-steel/50 rounded-lg px-3 py-2 text-sm text-slate-200 w-72 max-w-full" />
+      <select id="nc-status-filter" class="bg-ink-100 border border-steel/50 rounded-lg px-3 py-2 text-sm text-slate-200">
+        <option value="">All statuses</option>
+      </select>
+      <button id="nc-export-btn" class="text-xs font-mono text-steel border border-steel/40 rounded px-3 py-2 hover:text-accent hover:border-accent transition-colors">
+        Export ⭳
+      </button>
+    </div>
+
+    <div class="overflow-x-auto">
+      <table class="w-full text-xs" id="nc-table">
+        <thead>
+          <tr class="text-left text-steel font-mono uppercase tracking-wide border-b border-steel/30">
+            <th class="py-2 pr-3">Number</th>
+            <th class="py-2 pr-3">Date</th>
+            <th class="py-2 pr-3">Model</th>
+            <th class="py-2 pr-3">Serial</th>
+            <th class="py-2 pr-3">Ticket #</th>
+            <th class="py-2 pr-3">Carrier</th>
+            <th class="py-2 pr-3">Status</th>
+            <th class="py-2 pr-3">Filed By</th>
+            <th class="py-2 pr-3"></th>
+          </tr>
+        </thead>
+        <tbody id="nc-table-body" class="text-slate-300">
+        </tbody>
+      </table>
+      <div id="nc-empty" class="hidden text-center py-10 text-steel text-sm">No records match.</div>
+    </div>
+
+    <div class="flex items-center justify-between mt-4 text-xs text-steel font-mono">
+      <span id="nc-count"></span>
+      <div class="flex items-center gap-2">
+        <button id="nc-prev" class="border border-steel/40 rounded px-3 py-1.5 hover:text-accent hover:border-accent transition-colors disabled:opacity-30">← Prev</button>
+        <button id="nc-next" class="border border-steel/40 rounded px-3 py-1.5 hover:text-accent hover:border-accent transition-colors disabled:opacity-30">Next →</button>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- Edit item modal -->
+<div id="nc-edit-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background: rgba(0,0,0,.6);">
+  <div class="bg-ink-50 border border-steel/40 rounded-lg p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold text-slate-100">Edit <span id="nc-edit-number" class="text-accent"></span></h2>
+      <button id="nc-edit-close" class="text-steel hover:text-accent text-xl leading-none">&times;</button>
+    </div>
+    <form id="nc-edit-form" class="grid grid-cols-1 md:grid-cols-2 gap-4"></form>
+    <div id="nc-edit-error" class="hidden mt-3 text-xs text-rose-400 font-mono"></div>
+    <div class="mt-5 flex items-center gap-3">
+      <button id="nc-edit-save" class="bg-accent text-ink font-semibold py-2 px-5 rounded-lg text-sm hover:bg-accent-dim transition-all">Save</button>
+      <button id="nc-edit-delete" class="text-xs font-mono text-rose-400 border border-rose-400/40 rounded px-3 py-2 hover:bg-rose-400/10 transition-colors ml-auto">Delete Record</button>
+    </div>
+  </div>
+</div>
+
+<!-- Print label modal -->
+<div id="nc-label-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background: rgba(0,0,0,.6);">
+  <div class="bg-ink-50 border border-steel/40 rounded-lg p-6 w-full max-w-md">
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-lg font-semibold text-slate-100">Print Label — <span id="nc-label-number" class="text-accent"></span></h2>
+      <button id="nc-label-close" class="text-steel hover:text-accent text-xl leading-none">&times;</button>
+    </div>
+    <p class="text-steel text-xs mb-4">3" x 4" label via Zebra Browser Print (must be installed and running on this machine).</p>
+    <div id="nc-label-status" class="text-xs font-mono text-steel mb-4"></div>
+    <div class="flex items-center gap-3">
+      <button id="nc-label-print" class="bg-accent text-ink font-semibold py-2 px-5 rounded-lg text-sm hover:bg-accent-dim transition-all">Print</button>
+      <a id="nc-label-download" class="text-xs font-mono text-steel border border-steel/40 rounded px-3 py-2 hover:text-accent hover:border-accent transition-colors" href="#">Download .zpl</a>
+    </div>
+  </div>
 </div>
 
 <!-- ══════════════════════════════════════════════════════════
@@ -1546,6 +1722,15 @@
 </div>
 
 
+<script>
+  window.NC_USER = { username: {{ (auth_user.username if auth_user else '')|tojson }} };
+</script>
+<!-- Zebra Browser Print SDK — download "BrowserPrint-3.x.min.js" from Zebra's
+     own site (https://www.zebra.com → Browser Print) and drop it in
+     static/js/, then uncomment this line. Without it, label printing falls
+     back to a downloadable .zpl file. -->
+<!-- <script src="/static/js/BrowserPrint-3.1.250.min.js"></script> -->
 <script src="/static/js/app.js" defer></script>
+<script src="/static/js/nonconforming.js" defer></script>
 </body>
 </html>
