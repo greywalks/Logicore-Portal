@@ -7,8 +7,11 @@ from pathlib import Path
 from datetime import datetime
 
 import pandas as pd
-from flask import Flask, render_template, request, jsonify, Response, send_file, session as flask_session
+from flask import Flask, render_template, request, jsonify, Response, send_file, session as flask_session, redirect, url_for, flash
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
+from werkzeug.security import check_password_hash
+
+import portal_auth
 
 app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
@@ -56,18 +59,235 @@ app.wsgi_app = DispatcherMiddleware(app.wsgi_app, {
 # with an ephemeral filesystem (Render's free tier, etc.) this file doesn't
 # survive a restart/redeploy either — set a FLASK_SECRET_KEY environment
 # variable there instead and it's preferred over the file automatically.
-SESSION_SECRET_FILE = Path(__file__).parent / ".flask_secret"
-_env_secret = os.environ.get("FLASK_SECRET_KEY")
-if _env_secret:
-    app.secret_key = _env_secret
-elif SESSION_SECRET_FILE.exists():
-    app.secret_key = SESSION_SECRET_FILE.read_bytes()
-else:
-    app.secret_key = os.urandom(32)
-    try:
-        SESSION_SECRET_FILE.write_bytes(app.secret_key)
-    except OSError:
-        pass  # read-only filesystem — fine, this process's secret just won't persist
+# Shared with training_tracker/app.py (see portal_auth.py docstring) so a
+# session started at the top-level /login is readable by the mounted
+# Training Tracker app too — one login, one session cookie, both apps.
+app.secret_key = portal_auth.load_or_create_secret()
+
+portal_auth.init_db()
+app.teardown_appcontext(portal_auth.close_db)
+
+
+# ── Portal-wide login gate ──────────────────────────────────────────────────
+# Every route requires a logged-in user except the handful below. Section-
+# level access (which nav items / API routes a user may reach) is enforced
+# per-route via ROUTE_SECTIONS + the before_request hook further down, so a
+# direct link to a page/API a user isn't permissioned for 404s/redirects
+# instead of rendering.
+PUBLIC_ENDPOINTS = {"login", "healthz", "version", "static"}
+
+# Maps each route's endpoint (view function name) to the (section, subsection)
+# it belongs to, per portal_auth.SECTIONS. "index" and anything not listed
+# just requires being logged in (no specific section) — index.html does its
+# own conditional rendering of nav items based on the user's permissions.
+ROUTE_SECTIONS = {
+    # Promethean — Workshop Invoice
+    "sanitize_route": ("invoice-generator", "promethean"),
+    "generate": ("invoice-generator", "promethean"),
+    "stream": ("invoice-generator", "promethean"),
+    "download": ("invoice-generator", "promethean"),
+    # Promethean — Storage Invoice
+    "analyze_storage_route": ("invoice-generator", "promethean"),
+    "confirm_storage": ("invoice-generator", "promethean"),
+    "stream_storage": ("invoice-generator", "promethean"),
+    "get_storage_prices": ("invoice-generator", "promethean"),
+    "set_storage_prices": ("invoice-generator", "promethean"),
+    # Promethean — FedEx Shipment Upload
+    "analyze_fedex_shipment_route": ("invoice-generator", "promethean"),
+    "build_fedex_shipment": ("invoice-generator", "promethean"),
+    "stream_fedex_shipment": ("invoice-generator", "promethean"),
+    "get_fedex_shipment_defaults": ("invoice-generator", "promethean"),
+    "set_fedex_shipment_defaults": ("invoice-generator", "promethean"),
+    # Philips
+    "analyze_philips_route": ("invoice-generator", "philips"),
+    "confirm_philips": ("invoice-generator", "philips"),
+    "stream_philips": ("invoice-generator", "philips"),
+    "generate_report_and_analyze": ("invoice-generator", "philips"),
+    "get_philips_dimensions": ("invoice-generator", "philips"),
+    "upload_philips_dimensions": ("invoice-generator", "philips"),
+    "download_philips_dimensions": ("invoice-generator", "philips"),
+    "get_philips_repair_cost": ("invoice-generator", "philips"),
+    "set_philips_repair_cost": ("invoice-generator", "philips"),
+    # TCL
+    "analyze_tcl_route": ("invoice-generator", "tcl"),
+    "confirm_tcl": ("invoice-generator", "tcl"),
+    "stream_tcl": ("invoice-generator", "tcl"),
+    # AMC
+    "analyze_amc_route": ("invoice-generator", "amc"),
+    "confirm_amc": ("invoice-generator", "amc"),
+    "stream_amc": ("invoice-generator", "amc"),
+    "get_amc_dimensions": ("invoice-generator", "amc"),
+    "upload_amc_dimensions": ("invoice-generator", "amc"),
+    "download_amc_dimensions": ("invoice-generator", "amc"),
+    "get_amc_prices": ("invoice-generator", "amc"),
+    "set_amc_prices": ("invoice-generator", "amc"),
+    # Config
+    "get_serial_rules": ("invoice-generator", "config"),
+    "save_serial_rules": ("invoice-generator", "config"),
+}
+
+
+@app.before_request
+def _enforce_login_and_permissions():
+    endpoint = request.endpoint
+    if endpoint is None or endpoint in PUBLIC_ENDPOINTS:
+        return None
+    user = portal_auth.get_current_user()
+    if not user:
+        return redirect(url_for("login", next=request.path))
+    section = ROUTE_SECTIONS.get(endpoint)
+    if section and not portal_auth.has_access(user, section[0], section[1]):
+        flash("You don't have permission to view that.", "error")
+        return redirect(url_for("index"))
+    return None
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    if request.method == "POST":
+        username = request.form.get("username", "").strip()
+        password = request.form.get("password", "")
+        db = portal_auth.get_db()
+        row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
+        if row and check_password_hash(row["password_hash"], password):
+            flask_session.clear()
+            flask_session["user_id"] = row["id"]
+            flask_session.permanent = True
+            next_url = request.form.get("next") or request.args.get("next") or url_for("index")
+            return redirect(next_url)
+        flash("Incorrect username or password.", "error")
+    next_url = request.args.get("next", "")
+    return render_template("login.html", next_url=next_url)
+
+
+@app.route("/logout", methods=["POST"])
+def logout():
+    flask_session.clear()
+    flash("Signed out.", "success")
+    return redirect(url_for("login"))
+
+
+@app.route("/admin/permissions")
+def admin_permissions():
+    user = portal_auth.get_current_user()
+    if not user or not user["is_superadmin"]:
+        flash("You don't have permission to view that.", "error")
+        return redirect(url_for("index"))
+    users = portal_auth.list_users()
+    perms_by_user = {}
+    for u in users:
+        raw = portal_auth.get_user_permissions(u["id"])  # {(section, subsection): role_or_'access'}
+        shaped = {}
+        for section, meta in portal_auth.SECTIONS.items():
+            if meta.get("children"):
+                whole = (section, None) in raw
+                children = {c for (s, sub) in raw if s == section and sub is not None for c in [sub]}
+                shaped[section] = {"whole": whole, "children": children}
+            elif meta.get("roles"):
+                shaped[section] = raw.get((section, None))  # role string or None
+            else:
+                shaped[section] = (section, None) in raw
+        perms_by_user[u["id"]] = shaped
+    return render_template(
+        "admin_permissions.html",
+        users=users,
+        perms_by_user=perms_by_user,
+        sections=portal_auth.SECTIONS,
+    )
+
+
+@app.route("/admin/permissions/users/new", methods=["POST"])
+def admin_permissions_new_user():
+    user = portal_auth.get_current_user()
+    if not user or not user["is_superadmin"]:
+        flash("You don't have permission to do that.", "error")
+        return redirect(url_for("index"))
+    username = request.form.get("username", "").strip()
+    password = request.form.get("password", "")
+    is_superadmin = request.form.get("is_superadmin") == "on"
+    if not username or not password:
+        flash("Username and password are required.", "error")
+    else:
+        try:
+            portal_auth.create_user(username, password, is_superadmin)
+            flash(f"Created user {username}.", "success")
+        except Exception:
+            flash("That username is already taken.", "error")
+    return redirect(url_for("admin_permissions"))
+
+
+@app.route("/admin/permissions/users/<int:user_id>/delete", methods=["POST"])
+def admin_permissions_delete_user(user_id):
+    user = portal_auth.get_current_user()
+    if not user or not user["is_superadmin"]:
+        flash("You don't have permission to do that.", "error")
+        return redirect(url_for("index"))
+    if user_id == user["id"]:
+        flash("You can't delete your own account while logged in as it.", "error")
+        return redirect(url_for("admin_permissions"))
+    portal_auth.delete_user(user_id)
+    flash("User deleted.", "success")
+    return redirect(url_for("admin_permissions"))
+
+
+@app.route("/admin/permissions/users/<int:user_id>/password", methods=["POST"])
+def admin_permissions_reset_password(user_id):
+    user = portal_auth.get_current_user()
+    if not user or not user["is_superadmin"]:
+        flash("You don't have permission to do that.", "error")
+        return redirect(url_for("index"))
+    password = request.form.get("password", "")
+    if len(password) < 4:
+        flash("Password must be at least 4 characters.", "error")
+    else:
+        portal_auth.update_user(user_id, password=password)
+        flash("Password updated.", "success")
+    return redirect(url_for("admin_permissions"))
+
+
+@app.route("/admin/permissions/users/<int:user_id>/set", methods=["POST"])
+def admin_permissions_set(user_id):
+    user = portal_auth.get_current_user()
+    if not user or not user["is_superadmin"]:
+        flash("You don't have permission to do that.", "error")
+        return redirect(url_for("index"))
+
+    # Top-level sections without children: checkbox "on"/absent.
+    for section, meta in portal_auth.SECTIONS.items():
+        if meta.get("children"):
+            continue
+        if meta.get("roles"):
+            role = request.form.get(f"role__{section}", "")
+            if role in meta["roles"]:
+                portal_auth.set_permission(user_id, section, None, role)
+            else:
+                portal_auth.clear_permission(user_id, section, None)
+        else:
+            if request.form.get(f"access__{section}") == "on":
+                portal_auth.set_permission(user_id, section, None, "access")
+            else:
+                portal_auth.clear_permission(user_id, section, None)
+
+    # Sections with children: either "whole section" or a set of specific
+    # children.
+    for section, meta in portal_auth.SECTIONS.items():
+        children = meta.get("children")
+        if not children:
+            continue
+        if request.form.get(f"access__{section}") == "on":
+            portal_auth.set_permission(user_id, section, None, "access")
+            for child in children:
+                portal_auth.clear_permission(user_id, section, child)
+        else:
+            portal_auth.clear_permission(user_id, section, None)
+            for child in children:
+                if request.form.get(f"access__{section}__{child}") == "on":
+                    portal_auth.set_permission(user_id, section, child, "access")
+                else:
+                    portal_auth.clear_permission(user_id, section, child)
+
+    flash("Permissions updated.", "success")
+    return redirect(url_for("admin_permissions"))
 
 
 def _sid() -> str:
@@ -494,7 +714,39 @@ def healthz():
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    user = portal_auth.get_current_user()
+    ig_children = set(portal_auth.accessible_children(user, "invoice-generator"))
+    can_ig = bool(ig_children)
+    can_sms = portal_auth.has_access(user, "sms-nonconforming")
+    can_tbd2 = portal_auth.has_access(user, "tbd2")
+    tt_role = portal_auth.get_role(user, "training-tracker")
+    can_tt = tt_role is not None
+
+    default_portal = None
+    for p, ok in (("invoice-generator", can_ig), ("sms-nonconforming", can_sms), ("tbd2", can_tbd2)):
+        if ok:
+            default_portal = p
+            break
+
+    default_client = None
+    if can_ig:
+        for c in ("promethean", "amc", "tcl", "philips", "config"):
+            if c in ig_children:
+                default_client = c
+                break
+
+    return render_template(
+        "index.html",
+        auth_user=user,
+        can_invoice_generator=can_ig,
+        ig_children=ig_children,
+        can_sms_nonconforming=can_sms,
+        can_tbd2=can_tbd2,
+        can_training_tracker=can_tt,
+        default_portal=default_portal,
+        default_client=default_client,
+        has_any_access=bool(default_portal or can_tt),
+    )
 
 
 # ── SANITIZE: validate raw production file ────────────────────────────────────

@@ -1,8 +1,13 @@
-# Auto-generated Flask session-cookie signing key (see app.py SESSION_SECRET_FILE).
-# Anyone with this file can forge session cookies for this app instance —
-# never commit it or ship it in a handoff zip. The app creates a fresh one
-# automatically on first run if it's missing.
+# Auto-generated Flask session-cookie signing key, shared by the portal app
+# and the mounted Training Tracker app (see portal_auth.py). Anyone with this
+# file can forge session cookies for every app instance — never commit it or
+# ship it in a handoff zip. Created automatically on first run if missing.
 .flask_secret
+
+# Shared users/permissions database (see portal_auth.py) — runtime data,
+# not source. Created automatically (with a seeded admin/admin superadmin)
+# on first run.
+portal_auth.db
 
 # Runtime data — user uploads, generated invoices, editable pricing/config
 # that shouldn't be baked into version control.

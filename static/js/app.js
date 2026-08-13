@@ -1707,7 +1707,12 @@ document.addEventListener('keydown', e => { if(e.key==='Escape') hideAbout(); })
     if (requestedPortal && document.getElementById('portal-content-' + requestedPortal)) {
       showPortalPage(requestedPortal);
     } else {
-      setCrumb('Promethean', 'Workshop Invoice');
+      // Root/leaf text is already server-rendered correctly for whichever
+      // section the logged-in user actually has access to (see index() in
+      // app.py) — just re-run it through setCrumb for sep/leaf visibility,
+      // rather than hardcoding 'Promethean'/'Workshop Invoice'.
+      const rootEl = document.getElementById('crumb-root');
+      if (rootEl) setCrumb(rootEl.textContent.trim(), rootEl.dataset.defaultLeaf || null);
     }
   });
 })();

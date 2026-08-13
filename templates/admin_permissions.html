@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Users &amp; Permissions — Logicore Portal</title>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <style>
+    body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--font-sans); }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 2.5rem 1.5rem 5rem; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 2rem; }
+    .topbar a { color: var(--text-muted); text-decoration: none; font-family: var(--font-mono); font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.05em; }
+    .topbar a:hover { color: var(--accent); }
+    h1 { font-family: var(--font-display); font-size: 1.6rem; margin: 0; }
+    h2 { font-family: var(--font-display); font-size: 1.1rem; margin: 0 0 1rem; }
+    .card { background: var(--bg-50); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 1.5rem; margin-bottom: 1.5rem; }
+    .flash { padding: 0.6rem 0.8rem; border-radius: var(--radius-sm); font-size: 0.85rem; margin-bottom: 1.25rem; }
+    .flash-error { background: rgba(239,68,68,.12); color: #f87171; border: 1px solid rgba(239,68,68,.3); }
+    .flash-success { background: rgba(47,216,166,.12); color: var(--accent-glow); border: 1px solid rgba(47,216,166,.3); }
+    label { display: block; font-family: var(--font-mono); font-size: 0.68rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-muted); margin-bottom: 0.3rem; }
+    input[type="text"], input[type="password"], select {
+      width: 100%; box-sizing: border-box; padding: 0.5rem 0.65rem; background: var(--bg-input);
+      border: 1px solid var(--border); border-radius: var(--radius-sm); color: var(--text); font-size: 0.85rem;
+    }
+    .row { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .row > div { flex: 1; min-width: 150px; }
+    .btn { display: inline-block; padding: 0.5rem 1rem; background: var(--accent); color: #06110d; border: none;
+      border-radius: var(--radius-sm); font-family: var(--font-mono); font-weight: 600; font-size: 0.75rem;
+      text-transform: uppercase; letter-spacing: 0.04em; cursor: pointer; }
+    .btn:hover { background: var(--accent-glow); }
+    .btn-danger { background: transparent; color: #f87171; border: 1px solid rgba(239,68,68,.4); }
+    .btn-danger:hover { background: rgba(239,68,68,.12); }
+    .btn-ghost { background: transparent; color: var(--text-sub); border: 1px solid var(--border); }
+    .btn-ghost:hover { border-color: var(--accent); color: var(--accent); }
+    .user-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+    .user-name { font-family: var(--font-display); font-size: 1.05rem; }
+    .badge { font-family: var(--font-mono); font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em;
+      background: rgba(47,216,166,.12); color: var(--accent-glow); border: 1px solid rgba(47,216,166,.3);
+      border-radius: 999px; padding: 0.15rem 0.55rem; margin-left: 0.5rem; }
+    .section-block { border-top: 1px solid var(--border); padding-top: 0.9rem; margin-top: 0.9rem; }
+    .section-title { font-weight: 600; font-size: 0.85rem; margin-bottom: 0.5rem; }
+    .children { display: flex; flex-wrap: wrap; gap: 0.9rem; margin-top: 0.5rem; padding-left: 1.4rem; }
+    .checkline { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
+    .checkline input { width: auto; }
+    .actions-row { display: flex; gap: 0.6rem; align-items: center; margin-top: 1rem; flex-wrap: wrap; }
+    .inline-form { display: inline-flex; gap: 0.5rem; align-items: center; }
+    .inline-form input[type="password"] { width: 160px; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="topbar">
+      <h1>Users &amp; Permissions</h1>
+      <a href="{{ url_for('index') }}">&larr; Back to portal</a>
+    </div>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="flash {% if category == 'error' %}flash-error{% else %}flash-success{% endif %}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+
+    <div class="card">
+      <h2>Add user</h2>
+      <form method="POST" action="{{ url_for('admin_permissions_new_user') }}">
+        <div class="row">
+          <div>
+            <label>Username</label>
+            <input type="text" name="username" required>
+          </div>
+          <div>
+            <label>Password</label>
+            <input type="password" name="password" required>
+          </div>
+        </div>
+        <div class="checkline" style="margin-top:0.75rem;">
+          <input type="checkbox" id="new-superadmin" name="is_superadmin">
+          <label for="new-superadmin" style="margin:0;">Superadmin (full access to everything, incl. this page)</label>
+        </div>
+        <div class="actions-row">
+          <button type="submit" class="btn">Create user</button>
+        </div>
+      </form>
+    </div>
+
+    {% for u in users %}
+    <div class="card">
+      <div class="user-head">
+        <div class="user-name">{{ u.username }}{% if u.is_superadmin %}<span class="badge">Superadmin</span>{% endif %}</div>
+        <div class="actions-row" style="margin-top:0;">
+          <form class="inline-form" method="POST" action="{{ url_for('admin_permissions_reset_password', user_id=u.id) }}">
+            <input type="password" name="password" placeholder="New password">
+            <button type="submit" class="btn btn-ghost">Reset password</button>
+          </form>
+          <form method="POST" action="{{ url_for('admin_permissions_delete_user', user_id=u.id) }}" onsubmit="return confirm('Delete {{ u.username }}?');">
+            <button type="submit" class="btn btn-danger">Delete</button>
+          </form>
+        </div>
+      </div>
+
+      {% if u.is_superadmin %}
+      <p style="color: var(--text-muted); font-size: 0.85rem;">Superadmins automatically have access to every section — nothing to configure.</p>
+      {% else %}
+      <form method="POST" action="{{ url_for('admin_permissions_set', user_id=u.id) }}">
+        {% set perms = perms_by_user[u.id] %}
+        {% for section, meta in sections.items() %}
+        <div class="section-block">
+          {% if meta.children %}
+            <div class="checkline">
+              <input type="checkbox" id="ig-{{ u.id }}" name="access__{{ section }}" {% if perms[section].whole %}checked{% endif %}>
+              <label for="ig-{{ u.id }}" style="margin:0;" class="section-title">{{ meta.label }} — full access</label>
+            </div>
+            <div class="children">
+              {% for child_key, child_label in meta.children.items() %}
+              <div class="checkline">
+                <input type="checkbox" id="ig-{{ u.id }}-{{ child_key }}" name="access__{{ section }}__{{ child_key }}" {% if child_key in perms[section].children %}checked{% endif %}>
+                <label for="ig-{{ u.id }}-{{ child_key }}" style="margin:0;">{{ child_label }}</label>
+              </div>
+              {% endfor %}
+            </div>
+          {% elif meta.roles %}
+            <label class="section-title" style="text-transform:none;letter-spacing:normal;font-family:inherit;">{{ meta.label }}</label>
+            <select name="role__{{ section }}">
+              <option value="" {% if not perms[section] %}selected{% endif %}>No access</option>
+              {% for r in meta.roles %}
+              <option value="{{ r }}" {% if perms[section] == r %}selected{% endif %}>{{ r|capitalize }}</option>
+              {% endfor %}
+            </select>
+          {% else %}
+            <div class="checkline">
+              <input type="checkbox" id="flat-{{ u.id }}-{{ section }}" name="access__{{ section }}" {% if perms[section] %}checked{% endif %}>
+              <label for="flat-{{ u.id }}-{{ section }}" style="margin:0;" class="section-title">{{ meta.label }}</label>
+            </div>
+          {% endif %}
+        </div>
+        {% endfor %}
+        <div class="actions-row">
+          <button type="submit" class="btn">Save permissions</button>
+        </div>
+      </form>
+      {% endif %}
+    </div>
+    {% endfor %}
+  </div>
+</body>
+</html>

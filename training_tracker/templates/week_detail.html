@@ -159,7 +159,7 @@
         </div>
         {% endif %}
       </div>
-      <p class="font-mono text-[11px] text-ink-faint uppercase tracking-wide mb-3">{{ s.attended }} {{ c('session.attended_suffix') }} · {{ s.signed }} {{ c('session.signed_suffix') }}</p>
+      <p class="font-mono text-[11px] text-ink-faint uppercase tracking-wide mb-3">{{ s.attended }} {{ c('session.attended_suffix') }}</p>
 
       <ul class="divide-y divide-parchment-line mb-4 max-h-64 overflow-y-auto">
         {% for r in s.roster %}
@@ -178,10 +178,6 @@
         </li>
         {% endfor %}
       </ul>
-
-      <a href="{{ url_for('signoff_sheet', session_id=s.row.id) }}" class="block text-center bg-amber hover:bg-amber-dark text-ink font-mono text-xs uppercase tracking-wide px-4 py-2.5 rounded-md mb-2">
-        {{ c('session.open_signoff_btn') }}
-      </a>
 
       {% if can_manage_courses %}
       <div class="mt-3 pt-3 border-t border-parchment-line space-y-2">

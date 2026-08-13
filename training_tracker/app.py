@@ -16,8 +16,13 @@ from flask import (
     Flask, render_template, request, redirect, url_for, flash, g, jsonify, session,
     send_file, abort
 )
-from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+
+# Shared auth/permissions module (repo root) — Training Tracker no longer
+# has its own login or users table. It trusts the portal's session cookie
+# (see portal_auth.load_or_create_secret(), used for app.secret_key below)
+# and asks portal_auth for this user's Training Tracker role instead.
+import portal_auth
 
 # ---------------------------------------------------------------------------
 # Paths — aware of running as a normal script vs. a PyInstaller-bundled .exe.
@@ -69,25 +74,12 @@ def friendly(d, month_format="%B"):
     platforms (Linux/macOS use %-d, Windows uses %#d — neither works
     everywhere)."""
     return f"{d.strftime(month_format)} {d.day}, {d.year}"
-SECRET_KEY_PATH = os.path.join(DATA_DIR, ".secret_key")
 
 
-def _load_or_create_secret_key():
-    if os.path.exists(SECRET_KEY_PATH):
-        with open(SECRET_KEY_PATH, "r") as f:
-            key = f.read().strip()
-            if key:
-                return key
-    key = secrets.token_hex(32)
-    try:
-        with open(SECRET_KEY_PATH, "w") as f:
-            f.write(key)
-    except Exception:
-        pass
-    return key
-
-
-app.config["SECRET_KEY"] = _load_or_create_secret_key()
+# Must be byte-for-byte identical to the portal app's own app.secret_key so
+# a session cookie set at the top-level /login is readable here too — see
+# portal_auth.py's module docstring.
+app.config["SECRET_KEY"] = portal_auth.load_or_create_secret()
 
 
 # ---------------------------------------------------------------------------
@@ -384,6 +376,12 @@ def close_db(exception=None):
         db.close()
 
 
+# portal_auth uses its own connection cached on g under a different key
+# (see portal_auth.get_db()) — needs its own teardown in this app too, since
+# each mounted Flask app has its own request/app context.
+app.teardown_appcontext(portal_auth.close_db)
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS weeks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -446,25 +444,23 @@ CREATE TABLE IF NOT EXISTS theme_settings (
     value TEXT
 );
 
-CREATE TABLE IF NOT EXISTS users (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    username TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role TEXT NOT NULL DEFAULT 'trainee',
-    person_id INTEGER REFERENCES people(id) ON DELETE SET NULL,
-    created_at TEXT DEFAULT CURRENT_TIMESTAMP
-);
-
 CREATE TABLE IF NOT EXISTS signoff_uploads (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
     filename TEXT NOT NULL,
     original_filename TEXT,
     content_type TEXT,
-    uploaded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    uploaded_by TEXT,
     uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 """
+# NOTE: Training Tracker used to have its own `users` table (auth is now
+# centralized — see portal_auth.py). That table, and the `uploaded_by
+# INTEGER REFERENCES users(id)` column it's no longer safe to write to
+# (those ids are from a completely different table now), are cleaned up by
+# migrate_drop_local_users() below rather than in this CREATE-TABLE schema,
+# so existing installs get migrated instead of just silently not creating
+# a table/column that already exists.
 
 
 def migrate_to_sessions(db):
@@ -561,30 +557,72 @@ def migrate_to_sessions(db):
     print(f"Migration complete — created {len(session_for_week)} default session(s).")
 
 
+def migrate_drop_local_users(db):
+    """One-time upgrade for databases created before auth moved to the
+    shared portal_auth module. Drops the old `signoff_uploads.uploaded_by
+    INTEGER REFERENCES users(id)` column (rebuilt as a plain TEXT column
+    storing the uploader's username instead — portal_auth user ids live in
+    a different database, so the old FK can no longer be satisfied) and
+    drops the now-unused local `users` table entirely. No-ops on a fresh
+    install or a database that's already migrated.
+    """
+    db.row_factory = sqlite3.Row
+    upload_cols = [r["name"] for r in db.execute("PRAGMA table_info(signoff_uploads)").fetchall()]
+    if "uploaded_by" not in upload_cols:
+        return  # table doesn't exist yet (fresh install) — SCHEMA above creates it correctly
+    uploaded_by_type = next(
+        (r["type"] for r in db.execute("PRAGMA table_info(signoff_uploads)").fetchall() if r["name"] == "uploaded_by"),
+        "TEXT",
+    )
+    if uploaded_by_type.upper() == "TEXT":
+        return  # already migrated
+
+    print("Migrating signoff_uploads.uploaded_by off the old local users table...")
+    users_exists = db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='users'"
+    ).fetchone()
+    db.execute("ALTER TABLE signoff_uploads RENAME TO signoff_uploads_legacy")
+    db.execute(
+        """
+        CREATE TABLE signoff_uploads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL UNIQUE REFERENCES sessions(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            original_filename TEXT,
+            content_type TEXT,
+            uploaded_by TEXT,
+            uploaded_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    if users_exists:
+        db.execute(
+            """
+            INSERT INTO signoff_uploads (id, session_id, filename, original_filename, content_type, uploaded_by, uploaded_at)
+            SELECT l.id, l.session_id, l.filename, l.original_filename, l.content_type, u.username, l.uploaded_at
+            FROM signoff_uploads_legacy l LEFT JOIN users u ON u.id = l.uploaded_by
+            """
+        )
+    else:
+        db.execute(
+            """
+            INSERT INTO signoff_uploads (id, session_id, filename, original_filename, content_type, uploaded_by, uploaded_at)
+            SELECT id, session_id, filename, original_filename, content_type, NULL, uploaded_at
+            FROM signoff_uploads_legacy
+            """
+        )
+    db.execute("DROP TABLE signoff_uploads_legacy")
+    db.execute("DROP TABLE IF EXISTS users")
+    db.commit()
+    print("Migration complete.")
+
+
 def init_db():
     db = sqlite3.connect(DB_PATH)
     db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
     migrate_to_sessions(db)
-    # BEGIN IMMEDIATE takes SQLite's write lock right away, not lazily on
-    # first write — so if two worker processes race in here at startup
-    # (gunicorn --workers N, each importing this module and calling
-    # init_db() independently, all at once), the second one blocks until
-    # the first's transaction commits. Its COUNT(*) then correctly sees the
-    # row the first worker just inserted and skips seeding, instead of both
-    # reading 0 and crashing on the users.username UNIQUE constraint.
-    db.execute("BEGIN IMMEDIATE")
-    try:
-        existing_users = db.execute("SELECT COUNT(*) c FROM users").fetchone()[0]
-        if existing_users == 0:
-            db.execute(
-                "INSERT INTO users (username, password_hash, role) VALUES (?, ?, ?)",
-                ("admin", generate_password_hash("admin"), "admin"),
-            )
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
+    migrate_drop_local_users(db)
     db.close()
 
 
@@ -611,31 +649,28 @@ def load_theme_colors():
 
 
 # ---------------------------------------------------------------------------
-# Authentication — simple username/password login backed by the users table.
-# Roles: 'admin' (everything, incl. content/appearance/user management),
-# 'editor' (create/edit courses, roster, attendance — not appearance/users),
-# 'trainee' (view-only, can sign off their own attendance).
+# Authentication — delegated entirely to portal_auth (shared with the portal
+# app). Training Tracker no longer has its own login or users table; a
+# user's "role" here is just portal_auth.get_role(user, "training-tracker").
+# Roles: 'admin' (everything, incl. content/appearance), 'editor' (create/
+# edit courses, roster, attendance — not appearance), 'viewer' (read-only).
 # ---------------------------------------------------------------------------
 
 def get_current_user():
-    if "user" in g:
-        return g.user
-    user_id = session.get("user_id")
-    if not user_id:
-        g.user = None
-        return None
-    db = get_db()
-    g.user = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    if g.user is None:
-        session.clear()
-    return g.user
+    return portal_auth.get_current_user()
+
+
+def get_current_role():
+    return portal_auth.get_role(get_current_user(), "training-tracker")
 
 
 def login_required(view):
     @wraps(view)
     def wrapped(*args, **kwargs):
-        if not get_current_user():
-            return redirect(url_for("login", next=request.path))
+        user = get_current_user()
+        if not user or get_current_role() is None:
+            script_name = request.environ.get("SCRIPT_NAME", "")
+            return redirect(f"/login?next={script_name}{request.path}")
         return view(*args, **kwargs)
     return wrapped
 
@@ -645,9 +680,11 @@ def roles_required(*roles):
         @wraps(view)
         def wrapped(*args, **kwargs):
             user = get_current_user()
-            if not user:
-                return redirect(url_for("login", next=request.path))
-            if user["role"] not in roles:
+            role = get_current_role()
+            if not user or role is None:
+                script_name = request.environ.get("SCRIPT_NAME", "")
+                return redirect(f"/login?next={script_name}{request.path}")
+            if role not in roles:
                 flash("You don't have permission to do that.", "error")
                 return redirect(url_for("index"))
             return view(*args, **kwargs)
@@ -670,18 +707,26 @@ def inject_globals():
 
     theme = build_theme(load_theme_colors())
     user = get_current_user()
-    is_admin = bool(user and user["role"] == "admin")
-    can_manage_courses = bool(user and user["role"] in ("admin", "editor"))
-    using_default_admin_password = bool(
-        user and user["username"] == "admin" and check_password_hash(user["password_hash"], "admin")
-    )
+    role = get_current_role()
+    is_admin = role == "admin"
+    can_manage_courses = role in ("admin", "editor")
+    using_default_admin_password = portal_auth.using_default_admin_password(user)
     return {
         "c": c,
         "theme": theme,
         "user": user,
+        "role": role,
         "is_admin": is_admin,
         "can_manage_courses": can_manage_courses,
         "using_default_admin_password": using_default_admin_password,
+        # Shared portal sidebar (this base.html reuses index.html's markup —
+        # see the "Portal shell" notes) needs the same nav-visibility flags
+        # as the portal app itself, so an unpermissioned section doesn't
+        # show up in the sidebar just because someone's inside Training Tracker.
+        "can_invoice_generator": bool(portal_auth.accessible_children(user, "invoice-generator")),
+        "can_sms_nonconforming": portal_auth.has_access(user, "sms-nonconforming"),
+        "can_tbd2": portal_auth.has_access(user, "tbd2"),
+        "is_superadmin": bool(user and user.get("is_superadmin")),
     }
 
 
@@ -1242,63 +1287,6 @@ def toggle_attendance(session_id):
     return jsonify({"ok": True})
 
 
-@app.route("/session/<int:session_id>/signoff")
-@login_required
-def signoff_sheet(session_id):
-    db = get_db()
-    sess = get_session_or_404(db, session_id)
-    week = get_week_or_404(db, sess["week_id"])
-    user = get_current_user()
-    people = db.execute("SELECT * FROM people ORDER BY name ASC").fetchall()
-    attendance_rows = db.execute("SELECT * FROM attendance WHERE session_id = ?", (session_id,)).fetchall()
-    attendance_map = {a["person_id"]: a for a in attendance_rows}
-    roster = []
-    for p in people:
-        a = attendance_map.get(p["id"])
-        if not a or not a["attended"]:
-            continue
-        # Trainees only see/sign their own row; admins and editors can see
-        # and sign for anyone (useful for a shared kiosk at a training).
-        if user["role"] == "trainee" and p["id"] != user["person_id"]:
-            continue
-        roster.append(
-            {"person": p, "signed": bool(a["signature"]), "signature": a["signature"], "signed_at": a["signed_at"]}
-        )
-    today = friendly(date.today())
-    return render_template("sign.html", week=week, session=sess, roster=roster, today=today)
-
-
-@app.route("/session/<int:session_id>/sign/<int:person_id>", methods=["POST"])
-@login_required
-def submit_signature(session_id, person_id):
-    db = get_db()
-    get_session_or_404(db, session_id)
-    user = get_current_user()
-    if user["role"] == "trainee" and person_id != user["person_id"]:
-        flash("You can only sign for yourself.", "error")
-        return redirect(url_for("signoff_sheet", session_id=session_id))
-    signature = request.form.get("signature", "")
-    if not signature:
-        flash("Please provide a signature before submitting.", "error")
-        return redirect(url_for("signoff_sheet", session_id=session_id))
-    signed_at = datetime.now().strftime("%Y-%m-%d %H:%M")
-    existing = db.execute(
-        "SELECT * FROM attendance WHERE session_id = ? AND person_id = ?", (session_id, person_id)
-    ).fetchone()
-    if existing:
-        db.execute(
-            "UPDATE attendance SET signature = ?, signed_at = ?, attended = 1 WHERE session_id = ? AND person_id = ?",
-            (signature, signed_at, session_id, person_id),
-        )
-    else:
-        db.execute(
-            "INSERT INTO attendance (session_id, person_id, attended, signature, signed_at) VALUES (?, ?, 1, ?, ?)",
-            (session_id, person_id, signature, signed_at),
-        )
-    db.commit()
-    return redirect(url_for("signoff_sheet", session_id=session_id))
-
-
 @app.route("/session/<int:session_id>/signoff/download")
 @roles_required("admin", "editor")
 def download_signoff_template(session_id):
@@ -1346,13 +1334,13 @@ def upload_signoff_scan(session_id):
         db.execute(
             "UPDATE signoff_uploads SET filename = ?, original_filename = ?, content_type = ?, "
             "uploaded_by = ?, uploaded_at = CURRENT_TIMESTAMP WHERE session_id = ?",
-            (stored_name, secure_filename(file.filename), file.content_type, user["id"], session_id),
+            (stored_name, secure_filename(file.filename), file.content_type, user["username"], session_id),
         )
     else:
         db.execute(
             "INSERT INTO signoff_uploads (session_id, filename, original_filename, content_type, uploaded_by) "
             "VALUES (?, ?, ?, ?, ?)",
-            (session_id, stored_name, secure_filename(file.filename), file.content_type, user["id"]),
+            (session_id, stored_name, secure_filename(file.filename), file.content_type, user["username"]),
         )
     db.commit()
     flash("Signed sheet uploaded.", "success")
@@ -1442,77 +1430,38 @@ def report_attendance_matrix():
 # Routes: Authentication
 # ---------------------------------------------------------------------------
 
-@app.route("/login", methods=["GET", "POST"])
-def login():
-    if request.method == "POST":
-        username = request.form.get("username", "").strip()
-        password = request.form.get("password", "")
-        db = get_db()
-        row = db.execute("SELECT * FROM users WHERE username = ?", (username,)).fetchone()
-        if row and check_password_hash(row["password_hash"], password):
-            session.clear()
-            session["user_id"] = row["id"]
-            session.permanent = True
-            next_url = request.form.get("next") or request.args.get("next") or url_for("index")
-            return redirect(next_url)
-        flash("Incorrect username or password.", "error")
-    next_url = request.args.get("next", "")
-    return render_template("login.html", next_url=next_url)
+# ---------------------------------------------------------------------------
+# Routes: Authentication
+# ---------------------------------------------------------------------------
+# Training Tracker no longer has its own login/logout — both live at the
+# portal's top level (see app.py). Templates link to "/login" and "/logout"
+# directly (absolute paths, not url_for, since those endpoints don't exist
+# in this app) — see base.html.
 
 
-@app.route("/logout", methods=["POST"])
-def logout():
-    session.clear()
-    flash("Signed out.", "success")
-    return redirect(url_for("login"))
-
-
-@app.route("/account", methods=["GET", "POST"])
+@app.route("/account")
 @login_required
 def account():
     user = get_current_user()
-    if request.method == "POST":
-        current_password = request.form.get("current_password", "")
-        new_password = request.form.get("new_password", "")
-        confirm_password = request.form.get("confirm_password", "")
-        if not check_password_hash(user["password_hash"], current_password):
-            flash("Current password is incorrect.", "error")
-        elif len(new_password) < 4:
-            flash("New password must be at least 4 characters.", "error")
-        elif new_password != confirm_password:
-            flash("New passwords don't match.", "error")
-        else:
-            db = get_db()
-            db.execute(
-                "UPDATE users SET password_hash = ? WHERE id = ?",
-                (generate_password_hash(new_password), user["id"]),
-            )
-            db.commit()
-            flash("Password updated.", "success")
-            return redirect(url_for("account"))
-    return render_template("account.html")
+    return render_template("account.html", role=get_current_role())
 
 
 # ---------------------------------------------------------------------------
-# Routes: Admin — content, appearance & user management
+# Routes: Admin — content & appearance only. User/permission management
+# moved to the portal's top-level Users & Permissions screen (/admin/permissions).
 # ---------------------------------------------------------------------------
 
 @app.route("/admin")
 @roles_required("admin")
 def admin_content():
-    db = get_db()
     content = load_content()
     colors = load_theme_colors()
-    users = db.execute("SELECT * FROM users ORDER BY username ASC").fetchall()
-    people = db.execute("SELECT * FROM people ORDER BY name ASC").fetchall()
     return render_template(
         "admin.html",
         schema=CONTENT_SCHEMA,
         values=content,
         theme_fields=THEME_FIELDS,
         colors=colors,
-        users=users,
-        people=people,
     )
 
 
@@ -1565,92 +1514,8 @@ def admin_reset():
     return redirect(url_for("admin_content"))
 
 
-@app.route("/admin/users/new", methods=["POST"])
-@roles_required("admin")
-def admin_new_user():
-    db = get_db()
-    username = request.form.get("username", "").strip()
-    password = request.form.get("password", "")
-    role = request.form.get("role", "trainee")
-    if role not in ("admin", "editor", "trainee"):
-        role = "trainee"
-    person_id = request.form.get("person_id") or None
-    if not username or not password:
-        flash("Username and password are required.", "error")
-        return redirect(url_for("admin_content") + "#users")
-    if len(password) < 4:
-        flash("Password must be at least 4 characters.", "error")
-        return redirect(url_for("admin_content") + "#users")
-    taken = db.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
-    if taken:
-        flash(f'The username "{username}" is already taken.', "error")
-        return redirect(url_for("admin_content") + "#users")
-    db.execute(
-        "INSERT INTO users (username, password_hash, role, person_id) VALUES (?, ?, ?, ?)",
-        (username, generate_password_hash(password), role, person_id),
-    )
-    db.commit()
-    flash(f'User "{username}" created.', "success")
-    return redirect(url_for("admin_content") + "#users")
-
-
-@app.route("/admin/users/<int:user_id>/update", methods=["POST"])
-@roles_required("admin")
-def admin_update_user(user_id):
-    db = get_db()
-    role = request.form.get("role", "trainee")
-    if role not in ("admin", "editor", "trainee"):
-        role = "trainee"
-    person_id = request.form.get("person_id") or None
-    new_password = request.form.get("password", "").strip()
-
-    target = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    if not target:
-        flash("User not found.", "error")
-        return redirect(url_for("admin_content") + "#users")
-
-    admin_count = db.execute("SELECT COUNT(*) c FROM users WHERE role = 'admin'").fetchone()["c"]
-    if target["role"] == "admin" and role != "admin" and admin_count <= 1:
-        flash("Can't demote the last remaining admin.", "error")
-        return redirect(url_for("admin_content") + "#users")
-
-    db.execute("UPDATE users SET role = ?, person_id = ? WHERE id = ?", (role, person_id, user_id))
-    if new_password:
-        if len(new_password) < 4:
-            flash("Password must be at least 4 characters — role/roster link were saved, password was not.", "error")
-            return redirect(url_for("admin_content") + "#users")
-        db.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
-            (generate_password_hash(new_password), user_id),
-        )
-    db.commit()
-    flash(f'User "{target["username"]}" updated.', "success")
-    return redirect(url_for("admin_content") + "#users")
-
-
-@app.route("/admin/users/<int:user_id>/delete", methods=["POST"])
-@roles_required("admin")
-def admin_delete_user(user_id):
-    db = get_db()
-    current = get_current_user()
-    target = db.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    if not target:
-        flash("User not found.", "error")
-        return redirect(url_for("admin_content") + "#users")
-    if target["id"] == current["id"]:
-        flash("You can't delete your own account while logged in.", "error")
-        return redirect(url_for("admin_content") + "#users")
-    admin_count = db.execute("SELECT COUNT(*) c FROM users WHERE role = 'admin'").fetchone()["c"]
-    if target["role"] == "admin" and admin_count <= 1:
-        flash("Can't delete the last remaining admin account.", "error")
-        return redirect(url_for("admin_content") + "#users")
-    db.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    db.commit()
-    flash(f'User "{target["username"]}" removed.', "success")
-    return redirect(url_for("admin_content") + "#users")
-
-
 # ---------------------------------------------------------------------------
+
 
 @app.template_filter("friendly_date")
 def friendly_date(value):

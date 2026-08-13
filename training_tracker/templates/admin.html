@@ -11,7 +11,6 @@
 <div class="flex gap-4 mb-8 font-mono text-xs uppercase tracking-widest">
   <a href="#content" class="border-b-2 border-amber text-amber-dark pb-1">Content</a>
   <a href="#appearance" class="border-b-2 border-transparent text-ink-faint hover:text-amber-dark pb-1">Appearance</a>
-  <a href="#users" class="border-b-2 border-transparent text-ink-faint hover:text-amber-dark pb-1">Users</a>
 </div>
 
 <!-- ===================== CONTENT ===================== -->
@@ -99,105 +98,9 @@
   </form>
 </section>
 
-<!-- ===================== USERS ===================== -->
-<section id="users" class="mt-14 scroll-mt-6">
-  <h2 class="font-display text-2xl text-ink mb-2">Users</h2>
-  <p class="font-body text-sm text-ink-faint mb-5">
-    <strong>Admin</strong> can do anything, including this page. <strong>Editor</strong> can create/edit weeks,
-    lesson plans, roster, and attendance, but not appearance or users. <strong>Viewer</strong> can only view weeks
-    and roster — read-only, no editing. Attendees no longer need an account: the sign-off sheet link works without
-    logging in, so accounts here are only for trainers (and anyone who just needs to browse).
-  </p>
+<p class="font-body text-sm text-ink-faint mt-10 border-t border-parchment-line pt-6">
+  Users, passwords, and roles (Admin / Editor / Viewer) for Training Tracker are
+  managed from the portal's <strong>Users &amp; Permissions</strong> screen, not here.
+</p>
 
-  {% if users %}
-  <div class="bg-parchment-dim border border-parchment-line rounded-lg overflow-hidden mb-6">
-    <table class="w-full text-sm">
-      <thead>
-        <tr class="border-b border-parchment-line font-mono text-[11px] uppercase tracking-wide text-ink-faint text-left">
-          <th class="px-4 py-3">Username</th>
-          <th class="px-4 py-3">Role</th>
-          <th class="px-4 py-3">Linked roster person</th>
-          <th class="px-4 py-3">Reset password</th>
-          <th class="px-4 py-3"></th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for u in users %}
-        <tr class="border-b border-parchment-line last:border-0">
-          <td class="px-4 py-3 font-body text-ink font-medium align-middle">{{ u.username }}</td>
-          <td class="px-4 py-2 align-middle">
-            <select form="update_user_{{ u.id }}" name="role" class="px-2 py-1.5 text-xs font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-1 focus:ring-amber">
-              <option value="admin" {% if u.role == 'admin' %}selected{% endif %}>Admin</option>
-              <option value="editor" {% if u.role == 'editor' %}selected{% endif %}>Editor</option>
-              <option value="trainee" {% if u.role == 'trainee' %}selected{% endif %}>Viewer</option>
-            </select>
-          </td>
-          <td class="px-4 py-2 align-middle">
-            <select form="update_user_{{ u.id }}" name="person_id" class="px-2 py-1.5 text-xs font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-1 focus:ring-amber max-w-[160px]">
-              <option value="">— none —</option>
-              {% for p in people %}
-              <option value="{{ p.id }}" {% if u.person_id == p.id %}selected{% endif %}>{{ p.name }}</option>
-              {% endfor %}
-            </select>
-          </td>
-          <td class="px-4 py-2 align-middle">
-            <input form="update_user_{{ u.id }}" type="password" name="password" placeholder="leave blank to keep" class="w-40 px-2 py-1.5 text-xs font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-1 focus:ring-amber">
-          </td>
-          <td class="px-4 py-2 align-middle whitespace-nowrap">
-            <!-- This empty form has no visible fields of its own — the inputs
-                 above are wired to it via their form="update_user_{{ u.id }}"
-                 attribute, since a <form> can't span table cells directly. -->
-            <form id="update_user_{{ u.id }}" method="POST" action="{{ url_for('admin_update_user', user_id=u.id) }}" class="inline">
-              <button type="submit" class="font-mono text-[11px] uppercase tracking-wide bg-amber text-ink px-3 py-1.5 rounded-md hover:bg-ink-light">Save</button>
-            </form>
-            <form method="POST" action="{{ url_for('admin_delete_user', user_id=u.id) }}" class="inline" onsubmit="return confirm({{ ('Remove user \"' ~ u.username ~ '\"?') | tojson }})">
-              <button class="font-mono text-[11px] uppercase tracking-wide text-ink-faint hover:text-rose px-2">Remove</button>
-            </form>
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-  {% endif %}
-
-  <div class="bg-parchment-dim border border-parchment-line rounded-lg p-6 max-w-lg">
-    <h3 class="font-display text-lg text-ink mb-4">Add User</h3>
-    <form method="POST" action="{{ url_for('admin_new_user') }}">
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-4">
-        <div>
-          <label class="block font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1">Username</label>
-          <input name="username" required class="w-full px-3 py-2 text-sm rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
-        </div>
-        <div>
-          <label class="block font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1">Password</label>
-          <input type="password" name="password" required class="w-full px-3 py-2 text-sm rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
-        </div>
-        <div>
-          <label class="block font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1">Role</label>
-          <select name="role" class="w-full px-3 py-2 text-sm font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
-            <option value="editor" selected>Editor</option>
-            <option value="admin">Admin</option>
-            <option value="trainee">Viewer</option>
-          </select>
-        </div>
-        <div>
-          <label class="block font-mono text-[11px] uppercase tracking-wide text-ink-faint mb-1">Linked roster person</label>
-          <select name="person_id" class="w-full px-3 py-2 text-sm font-mono rounded-md border border-parchment-line bg-parchment focus:outline-none focus:ring-2 focus:ring-amber">
-            <option value="">— none —</option>
-            {% for p in people %}
-            <option value="{{ p.id }}">{{ p.name }}</option>
-            {% endfor %}
-          </select>
-        </div>
-      </div>
-      <button type="submit" class="w-full bg-amber hover:bg-amber-dark text-ink font-semibold font-mono text-sm uppercase tracking-wide px-4 py-2.5 rounded-md">
-        Create User
-      </button>
-    </form>
-    {% if not people %}
-    <p class="font-mono text-[11px] text-ink-faint mt-3">No one is on the <a href="{{ url_for('people_page') }}" class="text-amber-dark underline">roster</a> yet — add people there first if you want to link trainee accounts to them.</p>
-    {% endif %}
-  </div>
-</section>
 {% endblock %}
