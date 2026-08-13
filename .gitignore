@@ -1,0 +1,29 @@
+# Auto-generated Flask session-cookie signing key (see app.py SESSION_SECRET_FILE).
+# Anyone with this file can forge session cookies for this app instance —
+# never commit it or ship it in a handoff zip. The app creates a fresh one
+# automatically on first run if it's missing.
+.flask_secret
+
+# Runtime data — user uploads, generated invoices, editable pricing/config
+# that shouldn't be baked into version control.
+/uploads/*
+!/uploads/.gitkeep
+/outputs/*
+!/outputs/.gitkeep
+storage_prices.json
+amc_prices.json
+philips_dimensions.json
+philips_repair_cost.json
+amc_dimensions.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Node (Tailwind build tooling in build/ — not needed to run the app)
+build/node_modules/
+build/package-lock.json
+
+# Local env files (Render env vars are set in the dashboard, not committed)
+.env

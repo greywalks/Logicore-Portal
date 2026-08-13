@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: logicore-portal
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app --bind 0.0.0.0:$PORT --worker-class gthread --workers 2 --threads 4 --timeout 120
+    healthCheckPath: /healthz
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: FLASK_SECRET_KEY
+        generateValue: true
+    # No persistent disk attached — uploads/, outputs/, and any admin-edited
+    # config JSON (storage_prices.json, amc_prices.json, etc.) live on
+    # ephemeral storage and reset on every deploy/restart. See
+    # PROJECT_BRIEF.md "Deploying to Render" for what that does and doesn't
+    # affect, and how to add a paid persistent Disk if it becomes a problem.

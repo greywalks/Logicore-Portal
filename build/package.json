@@ -1,0 +1,12 @@
+{
+  "name": "logicore-invoice-suite-css-build",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Dev-only: compiles the static Tailwind stylesheet at ../static/css/tailwind.css. Not needed to run the app day-to-day.",
+  "scripts": {
+    "build": "tailwindcss -i input.css -o ../static/css/tailwind.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.0"
+  }
+}

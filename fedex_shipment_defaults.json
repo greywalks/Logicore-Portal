@@ -1,0 +1,20 @@
+{
+  "margin_divisor": 0.85,
+  "event1_code": "PMTH-SHIP",
+  "site_name":      "UNITED SERVICE SOURCE",
+  "org_id":         "Promethean",
+  "customer_id":    "Promethean",
+  "address":        "7195 WAELTI DR",
+  "address2":       "STE 101",
+  "city":           "MELBOURNE",
+  "state":          "FL",
+  "zip_code":       "32940",
+  "main_contact":   "MATT SHAW",
+  "bill_customer_id": "Promethean",
+  "call_type":      "DEPOT",
+  "call_rcvd_time": "17:00:00",
+  "status":         "CMP",
+  "queue_id":       "DIGIMED",
+  "due":            "BY",
+  "tech":           "E-ERWE"
+}

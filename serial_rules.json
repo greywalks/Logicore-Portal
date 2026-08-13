@@ -1,0 +1,228 @@
+{
+  "rules": [
+    {
+      "prefix": "65W",
+      "year_pos": 6,
+      "model_base": "AP7-U65",
+      "size": "65",
+      "o2_rule": "year_pos6"
+    },
+    {
+      "prefix": "75W",
+      "year_pos": 6,
+      "model_base": "AP7-U75",
+      "size": "75",
+      "o2_rule": "year_pos6"
+    },
+    {
+      "prefix": "86W",
+      "year_pos": 6,
+      "model_base": "AP7-U86",
+      "size": "86",
+      "o2_rule": "year_pos6"
+    },
+    {
+      "prefix": "770T",
+      "year_pos": 5,
+      "model_base": "AP7-B70",
+      "size": "70",
+      "o2_rule": "year_pos5"
+    },
+    {
+      "prefix": "77OT",
+      "year_pos": 5,
+      "model_base": "AP7-B70",
+      "size": "70",
+      "o2_rule": "year_pos5"
+    },
+    {
+      "prefix": "775T",
+      "year_pos": 5,
+      "model_base": "AP7-B75",
+      "size": "75",
+      "o2_rule": "year_pos5"
+    },
+    {
+      "prefix": "786T",
+      "year_pos": 5,
+      "model_base": "AP7-B86",
+      "size": "86",
+      "o2_rule": "year_pos5"
+    },
+    {
+      "prefix": "9A65",
+      "year_pos": 5,
+      "model_base": "AP9-A65",
+      "size": "65",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "9A75",
+      "year_pos": 5,
+      "model_base": "AP9-A75",
+      "size": "75",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "9A76",
+      "year_pos": 5,
+      "model_base": "AP9-A75",
+      "size": "75",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "9A86",
+      "year_pos": 5,
+      "model_base": "AP9-A86",
+      "size": "86",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "9B65",
+      "year_pos": 5,
+      "model_base": "AP9-B65",
+      "size": "65",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "9B75",
+      "year_pos": 5,
+      "model_base": "AP9-B75",
+      "size": "75",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "9B86",
+      "year_pos": 5,
+      "model_base": "AP9-B86",
+      "size": "86",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "9G65",
+      "year_pos": 5,
+      "model_base": "AP9-B65",
+      "size": "65",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "AA65",
+      "year_pos": 5,
+      "model_base": "AP10-A65",
+      "size": "65",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "AA75",
+      "year_pos": 5,
+      "model_base": "AP10-A75",
+      "size": "75",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "AA86",
+      "year_pos": 5,
+      "model_base": "AP10-A86",
+      "size": "86",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "AB55",
+      "year_pos": 5,
+      "model_base": "AP10-B55",
+      "size": "55",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "AB65",
+      "year_pos": 5,
+      "model_base": "AP10-B65",
+      "size": "65",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "AB75",
+      "year_pos": 5,
+      "model_base": "AP10-B75",
+      "size": "75",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "AB86",
+      "year_pos": 5,
+      "model_base": "AP10-B86",
+      "size": "86",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "AB83",
+      "year_pos": 5,
+      "model_base": "AP10-B86",
+      "size": "86",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "BE65",
+      "year_pos": 5,
+      "model_base": "APLE-65",
+      "size": "65",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "BE75",
+      "year_pos": 5,
+      "model_base": "APLE-75",
+      "size": "75",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "BE86",
+      "year_pos": 5,
+      "model_base": "APLE-86",
+      "size": "86",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "LX65",
+      "year_pos": 5,
+      "model_base": "APLX-65",
+      "size": "65",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "LX75",
+      "year_pos": 5,
+      "model_base": "APLX-75",
+      "size": "75",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "LX57",
+      "year_pos": 5,
+      "model_base": "APLX-75",
+      "size": "75",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "LX86",
+      "year_pos": 5,
+      "model_base": "APLX-86",
+      "size": "86",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "V65I",
+      "year_pos": 5,
+      "model_base": "VTP-65",
+      "size": "65",
+      "o2_rule": "never"
+    },
+    {
+      "prefix": "V75I",
+      "year_pos": 5,
+      "model_base": "VTP-75",
+      "size": "75",
+      "o2_rule": "never"
+    }
+  ]
+}
