@@ -334,55 +334,46 @@ def export_xlsx(rows):
 
 LABEL_W = 609   # 3in @ 203dpi
 LABEL_H = 812   # 4in @ 203dpi
-_MARGIN = 30
-_GAP = 30
+_MARGIN = 20
 _USABLE_W = LABEL_W - 2 * _MARGIN
+
+_QR_MAG = 6      # ^BQ magnification factor (1-10) -- 6 is comfortably scannable, not huge
+_QR_SIZE = 170   # reserved square (dots) for the QR incl. quiet zone
+_QR_GAP = 20     # gap between the number and the QR block
 
 
 def _fit_height(text, cap):
-    """Largest font height (dots) that keeps `text` inside the label's
-    usable width, capped at `cap`. Zebra's font 0 glyphs run roughly
-    0.65x as wide as they are tall for this character set (letters +
-    digits + hyphen); that ratio is what keeps this from clipping."""
+    """Largest font height (dots) that keeps `text` on one line inside the
+    label's usable width, capped at `cap`. Zebra's font 0 glyphs run
+    roughly 0.65x as wide as they are tall for this character set
+    (letters + digits + hyphen); that ratio is what keeps this from
+    clipping."""
     n = max(len(text), 1)
     h = _USABLE_W / (n * 0.65)
     return max(40, min(cap, int(h)))
 
 
 def build_zpl(item):
-    """3x4 label showing ONLY the Number, as big as the label allows.
-    If the number has a hyphen (e.g. "AD26-1"), it's split into two
-    stacked centered lines at the last hyphen ("AD26" / "1") — that lets
-    each line use a much larger font than a single line could at this
-    label width, so the number is unmistakable at a glance.
+    """3x4 label: the Number as a single centered line filling as much of
+    the label as its length allows, plus a small scannable QR code
+    (encoding the same Number) reserved in a strip at the bottom.
     Deliberately plain — easy to hand-tune in ZPL if the layout needs
     to change later."""
     number = (item.get("number") or "").strip()
 
-    if "-" in number:
-        top, _, bottom = number.rpartition("-")
-    else:
-        top, bottom = number, ""
+    number_area_h = LABEL_H - 2 * _MARGIN - _QR_SIZE - _QR_GAP
+    h = _fit_height(number, number_area_h)
+    y_num = _MARGIN + int((number_area_h - h) / 2)
+    y_qr = LABEL_H - _MARGIN - _QR_SIZE
+    x_qr = (LABEL_W - _QR_SIZE) // 2
 
-    if bottom:
-        avail_per_line = (LABEL_H - 2 * _MARGIN - _GAP) / 2
-        h = min(_fit_height(top, avail_per_line), _fit_height(bottom, avail_per_line))
-        y1 = _MARGIN
-        y2 = _MARGIN + h + _GAP
-        zpl = f"""^XA
+    zpl = f"""^XA
 ^PW{LABEL_W}
 ^LL{LABEL_H}
 ^CF0,{h}
-^FO0,{y1}^FB{LABEL_W},1,0,C,0^FD{top}^FS
-^FO0,{y2}^FB{LABEL_W},1,0,C,0^FD{bottom}^FS
-^XZ"""
-    else:
-        h = _fit_height(top, LABEL_H - 2 * _MARGIN)
-        y = int((LABEL_H - h) / 2)
-        zpl = f"""^XA
-^PW{LABEL_W}
-^LL{LABEL_H}
-^CF0,{h}
-^FO0,{y}^FB{LABEL_W},1,0,C,0^FD{top}^FS
+^FO0,{y_num}^FB{LABEL_W},1,0,C,0^FD{number}^FS
+^FO{x_qr},{y_qr}
+^BQN,2,{_QR_MAG}
+^FDLA,{number}^FS
 ^XZ"""
     return zpl

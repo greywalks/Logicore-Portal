@@ -1,0 +1,79 @@
+diff --git a/nonconforming.py b/nonconforming.py
+index e67508d..a89732f 100644
+--- a/nonconforming.py
++++ b/nonconforming.py
+@@ -332,34 +332,48 @@ def export_xlsx(rows):
+ # Zebra label (ZPL) — 3" x 4" @ 203dpi (609 x 812 dots)
+ # ─────────────────────────────────────────────────────────────────────────
+ 
++LABEL_W = 609   # 3in @ 203dpi
++LABEL_H = 812   # 4in @ 203dpi
++_MARGIN = 20
++_USABLE_W = LABEL_W - 2 * _MARGIN
++
++_QR_MAG = 6      # ^BQ magnification factor (1-10) -- 6 is comfortably scannable, not huge
++_QR_SIZE = 170   # reserved square (dots) for the QR incl. quiet zone
++_QR_GAP = 20     # gap between the number and the QR block
++
++
++def _fit_height(text, cap):
++    """Largest font height (dots) that keeps `text` on one line inside the
++    label's usable width, capped at `cap`. Zebra's font 0 glyphs run
++    roughly 0.65x as wide as they are tall for this character set
++    (letters + digits + hyphen); that ratio is what keeps this from
++    clipping."""
++    n = max(len(text), 1)
++    h = _USABLE_W / (n * 0.65)
++    return max(40, min(cap, int(h)))
++
++
+ def build_zpl(item):
+-    """A simple 3x4 label: big Number (also as a barcode), Model, Serial.
+-    Kept deliberately plain — easy to hand-tune in Zebra's ZPL if the exact
+-    layout needs to change later."""
+-    number = item.get("number") or ""
+-    model = item.get("model") or ""
+-    serial = item.get("serial") or ""
+-    ticket = item.get("ticket_no") or ""
++    """3x4 label: the Number as a single centered line filling as much of
++    the label as its length allows, plus a small scannable QR code
++    (encoding the same Number) reserved in a strip at the bottom.
++    Deliberately plain — easy to hand-tune in ZPL if the layout needs
++    to change later."""
++    number = (item.get("number") or "").strip()
++
++    number_area_h = LABEL_H - 2 * _MARGIN - _QR_SIZE - _QR_GAP
++    h = _fit_height(number, number_area_h)
++    y_num = _MARGIN + int((number_area_h - h) / 2)
++    y_qr = LABEL_H - _MARGIN - _QR_SIZE
++    x_qr = (LABEL_W - _QR_SIZE) // 2
+ 
+     zpl = f"""^XA
+-^PW609
+-^LL812
+-^CF0,60
+-^FO40,40^FDSMS NonConforming^FS
+-^FO40,110^GB529,4,4^FS
+-^CF0,110
+-^FO40,150^FD{number}^FS
+-^BY3,3,120
+-^FO40,280^BCN,120,Y,N,N^FD{number}^FS
+-^CF0,40
+-^FO40,440^FDModel:^FS
+-^CF0,36
+-^FO40,480^FD{model}^FS
+-^CF0,40
+-^FO40,540^FDSerial:^FS
+-^CF0,36
+-^FO40,580^FD{serial}^FS
+-^CF0,30
+-^FO40,650^FDTicket #: {ticket}^FS
++^PW{LABEL_W}
++^LL{LABEL_H}
++^CF0,{h}
++^FO0,{y_num}^FB{LABEL_W},1,0,C,0^FD{number}^FS
++^FO{x_qr},{y_qr}
++^BQN,2,{_QR_MAG}
++^FDLA,{number}^FS
+ ^XZ"""
+     return zpl
