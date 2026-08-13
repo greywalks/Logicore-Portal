@@ -76,7 +76,13 @@ const canvas = document.getElementById('sigCanvas');
 const ctx = canvas.getContext('2d');
 ctx.lineWidth = 2.4;
 ctx.lineCap = 'round';
-ctx.strokeStyle = '{{ theme.ink.DEFAULT }}';
+// Read the live --tt-ink CSS var (not the server-rendered {{ theme.ink.DEFAULT }})
+// so the pen color still contrasts against the canvas after a light/dark toggle —
+// ink is a light color in dark mode and a dark color in light mode.
+function applyInkColor() {
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--tt-ink').trim();
+}
+applyInkColor();
 let drawing = false;
 let hasDrawn = false;
 
@@ -120,6 +126,7 @@ function clearCanvas() {
 
 function openSignDialog(personId, name) {
   clearCanvas();
+  applyInkColor();
   document.getElementById('signName').textContent = name;
   document.getElementById('signForm').action = `/session/{{ session.id }}/sign/${personId}`;
   signDialog.showModal();

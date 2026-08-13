@@ -26,4 +26,26 @@
   window.showPortalPage = function (portal) {
     window.location.href = '/?portal=' + portal;
   };
+
+  // ── Theme toggle ──────────────────────────────────────────────────────────
+  // Same localStorage key ('theme') as the main app.js on index.html, so the
+  // choice made on either page carries over — both pages are served from the
+  // same origin (Training Tracker is a mounted sub-app, not a separate site).
+  window.toggleTheme = function () {
+    const html = document.documentElement;
+    const isLight = html.dataset.theme === 'light';
+    html.dataset.theme = isLight ? 'dark' : 'light';
+    const label = document.getElementById('toggle-label');
+    if (label) label.textContent = isLight ? '☀' : '🌙';
+    localStorage.setItem('theme', html.dataset.theme);
+  };
+
+  // Apply saved theme immediately (before first paint of content that cares,
+  // though this file loads at the end of body like index.html's app.js does).
+  (function () {
+    const saved = localStorage.getItem('theme') || 'dark';
+    document.documentElement.dataset.theme = saved;
+    const label = document.getElementById('toggle-label');
+    if (label) label.textContent = saved === 'light' ? '🌙' : '☀';
+  })();
 })();

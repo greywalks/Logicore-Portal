@@ -383,8 +383,17 @@ function toggleTheme() {
 })();
 
 // ── Splash ────────────────────────────────────────────────────────────────────
+// Only plays once per browser tab/session. Without this, it replayed every
+// time index.html did a full page load — which includes navigating to
+// Training Tracker (a real page, not an SPA tab) and then back via the
+// Logicore mark or sidebar link, even though nothing meaningful changed.
 (function() {
   const splash = document.getElementById('splash');
+  if (sessionStorage.getItem('splashShown')) {
+    splash.remove();
+    return;
+  }
+  sessionStorage.setItem('splashShown', '1');
   const dismiss = () => splash.classList.add('splash-out');
   setTimeout(dismiss, 2200);
   splash.addEventListener('click', dismiss);

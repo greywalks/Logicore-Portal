@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -27,15 +27,20 @@
     theme: {
       extend: {
         colors: {
+          // ink/parchment (canvas + text) are wired to CSS custom properties
+          // instead of literal hex so the light/dark toggle can repoint them
+          // via the [data-theme="light"] block below — amber/sage/rose stay
+          // literal since they're the admin's brand accent colors and don't
+          // need to flip between modes.
           ink: {
-            DEFAULT: '{{ theme.ink.DEFAULT }}',
-            light: '{{ theme.ink.light }}',
-            faint: '{{ theme.ink.faint }}',
+            DEFAULT: 'var(--tt-ink)',
+            light: 'var(--tt-ink-light)',
+            faint: 'var(--tt-ink-faint)',
           },
           parchment: {
-            DEFAULT: '{{ theme.parchment.DEFAULT }}',
-            dim: '{{ theme.parchment.dim }}',
-            line: '{{ theme.parchment.line }}',
+            DEFAULT: 'var(--tt-parchment)',
+            dim: 'var(--tt-parchment-dim)',
+            line: 'var(--tt-parchment-line)',
           },
           amber: {
             DEFAULT: '{{ theme.amber.DEFAULT }}',
@@ -61,16 +66,42 @@
   };
 </script>
 <style>
-  body { background-color: {{ theme.parchment.DEFAULT }}; }
+  /* Dark mode = the admin's configured colors (Appearance tab), same as
+     before the toggle existed. Light mode uses fixed values matching the
+     main portal's own light palette (static/css/app.css [data-theme="light"])
+     rather than trying to auto-invert whatever custom hex an admin picked —
+     ink/parchment are structural (background/text), so they need real
+     light-appropriate values, not just a derivation-direction flip. amber/
+     sage/rose (the admin's brand accent, success, danger colors) are left
+     untouched in both modes since a mid-tone accent generally reads fine on
+     either background. */
+  :root {
+    --tt-ink:            {{ theme.ink.DEFAULT }};
+    --tt-ink-light:       {{ theme.ink.light }};
+    --tt-ink-faint:        {{ theme.ink.faint }};
+    --tt-parchment:      {{ theme.parchment.DEFAULT }};
+    --tt-parchment-dim:   {{ theme.parchment.dim }};
+    --tt-parchment-line:   {{ theme.parchment.line }};
+  }
+  [data-theme="light"] {
+    --tt-ink:            #0f172a;
+    --tt-ink-light:       #334155;
+    --tt-ink-faint:        #64748b;
+    --tt-parchment:      #eef1f6;
+    --tt-parchment-dim:   #ffffff;
+    --tt-parchment-line:   #d3dae5;
+  }
+  body { background-color: var(--tt-parchment); }
   .ruled-line {
-    background-image: repeating-linear-gradient(transparent, transparent 34px, {{ theme.parchment.line }} 35px);
+    background-image: repeating-linear-gradient(transparent, transparent 34px, var(--tt-parchment-line) 35px);
   }
   ::-webkit-scrollbar { width: 10px; }
-  ::-webkit-scrollbar-thumb { background: {{ theme.parchment.line }}; border-radius: 6px; }
+  ::-webkit-scrollbar-thumb { background: var(--tt-parchment-line); border-radius: 6px; }
   [x-cloak] { display: none !important; }
   /* Fixed to the portal's own --sidebar-bg / --text so the header stays a
      consistent dark bar regardless of the admin-editable ink/parchment
-     values above (which now drive the main canvas, not this bar). */
+     values above (which now drive the main canvas, not this bar) and
+     regardless of the light/dark toggle. */
   .tt-header { background: #080a0e; color: #eef2f6; }
 </style>
 </head>
@@ -116,6 +147,14 @@
       <span>TBD 2</span>
     </button>
   </nav>
+
+  <div class="sidebar-footer">
+    <span class="ver-tag">{{ c('site.name') }}</span>
+    <div class="flex items-center gap-2">
+      <span class="toggle-label" id="toggle-label">☀</span>
+      <button id="theme-toggle" onclick="toggleTheme()" title="Toggle light/dark mode" aria-label="Toggle theme"></button>
+    </div>
+  </div>
 </aside>
 
 <div class="main">
