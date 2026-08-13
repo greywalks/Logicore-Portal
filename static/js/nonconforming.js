@@ -9,7 +9,6 @@
     offset: 0,
     total: 0,
     editingId: null,
-    labelItem: null,
   };
 
   const FIELD_LABELS = {
@@ -82,7 +81,8 @@
         <td class="py-2 pr-3">${escapeHtml(it.filed_by_username)}</td>
         <td class="py-2 pr-3 whitespace-nowrap">
           <button class="text-steel hover:text-accent transition-colors mr-2" data-action="label" data-id="${it.id}">Label</button>
-          <button class="text-steel hover:text-accent transition-colors" data-action="edit" data-id="${it.id}">Edit</button>
+          <button class="text-steel hover:text-accent transition-colors mr-2" data-action="edit" data-id="${it.id}">Edit</button>
+          <button class="text-steel/50 hover:text-accent transition-colors" data-action="download-label" data-id="${it.id}" title="Download .zpl (fallback if Browser Print isn't reachable)">⭳</button>
         </td>
       </tr>
     `).join("");
@@ -197,8 +197,96 @@
       if (!btn) return;
       const id = btn.dataset.id;
       if (btn.dataset.action === "edit") openEditModal(id);
-      if (btn.dataset.action === "label") openLabelModal(id);
+      if (btn.dataset.action === "label") printLabel(id, btn);
+      if (btn.dataset.action === "download-label") downloadLabel(id);
     });
+  }
+
+  // ── Toast (small, corner, auto-dismiss — not a blocking modal) ─────
+  function toast(message, isError) {
+    let el = $("nc-toast");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "nc-toast";
+      el.className = "fixed bottom-6 right-6 z-[9999] font-mono text-xs rounded-lg px-4 py-3 shadow-lg transition-opacity";
+      document.body.appendChild(el);
+    }
+    el.textContent = message;
+    el.style.background = isError ? "#ef4444" : "#1a2029";
+    el.style.color = isError ? "#fff" : "#2fd8a6";
+    el.style.border = isError ? "1px solid #f87171" : "1px solid #2fd8a6";
+    el.style.opacity = "1";
+    clearTimeout(toast._t);
+    toast._t = setTimeout(() => { el.style.opacity = "0"; }, isError ? 4000 : 2500);
+  }
+
+  // ── Zebra Browser Print — talk to the local agent's HTTP API directly
+  // (http://localhost:9100) rather than requiring Zebra's proprietary
+  // BrowserPrint-*.min.js file to be manually installed. Same endpoints
+  // that file itself calls under the hood: GET /default, POST /write.
+  const BP_BASE = "http://localhost:9100/";
+
+  function withTimeout(promise, ms) {
+    return Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
+    ]);
+  }
+
+  function parseDefaultPrinter(text) {
+    // Browser Print's /default returns a tab/newline-delimited block like:
+    //   "Name:\n\tZDesigner GK420d\n\tDevice Type:\n\tPrinter\n\t..."
+    // (7 "\n\t"-joined fields — see the reference wrapper this mirrors).
+    const parts = text.split("\n\t");
+    if (parts.length !== 7) throw new Error("unexpected /default response");
+    const clean = s => s.split(":").slice(1).join(":").trim();
+    return {
+      name: clean(parts[1]),
+      deviceType: clean(parts[2]),
+      connection: clean(parts[3]),
+      uid: clean(parts[4]),
+      provider: clean(parts[5]),
+      manufacturer: clean(parts[6]),
+      version: 0,
+    };
+  }
+
+  async function getDefaultZebraPrinter() {
+    const res = await withTimeout(fetch(BP_BASE + "default", {
+      method: "GET",
+      headers: { "Content-Type": "text/plain;charset=UTF-8" },
+    }), 3000);
+    const text = await res.text();
+    return parseDefaultPrinter(text);
+  }
+
+  async function sendZpl(device, zpl) {
+    const res = await withTimeout(fetch(BP_BASE + "write", {
+      method: "POST",
+      headers: { "Content-Type": "text/plain;charset=UTF-8" },
+      body: JSON.stringify({ device, data: zpl }),
+    }), 5000);
+    if (!res.ok) throw new Error("write failed");
+  }
+
+  async function printLabel(id, btn) {
+    if (btn) btn.disabled = true;
+    try {
+      const res = await fetch(`/nonconforming/api/items/${id}/label`);
+      const data = await res.json();
+      if (!data.ok) throw new Error(data.error || "could not build label");
+      const device = await getDefaultZebraPrinter();
+      await sendZpl(device, data.zpl);
+      toast(`Printed ${data.number} → ${device.name}`, false);
+    } catch (e) {
+      toast("Label Error, Check Printer", true);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
+  }
+
+  function downloadLabel(id) {
+    window.location.href = `/nonconforming/api/items/${id}/label?download=1`;
   }
 
   // ── Edit modal ───────────────────────────────────────────────────────
@@ -271,57 +359,6 @@
     });
   }
 
-  // ── Label print (Zebra Browser Print) ───────────────────────────────
-  async function openLabelModal(id) {
-    const res = await fetch(`/nonconforming/api/items/${id}/label`);
-    const data = await res.json();
-    if (!data.ok) return;
-    state.labelItem = { id, zpl: data.zpl, number: data.number };
-    $("nc-label-number").textContent = data.number;
-    $("nc-label-status").textContent = window.BrowserPrint
-      ? "Zebra Browser Print detected."
-      : "Zebra Browser Print not detected on this machine — download the .zpl file instead and print it from Zebra's own utility.";
-    $("nc-label-download").href = `/nonconforming/api/items/${id}/label?download=1`;
-    $("nc-label-modal").classList.remove("hidden");
-  }
-
-  function closeLabelModal() {
-    $("nc-label-modal").classList.add("hidden");
-    state.labelItem = null;
-  }
-
-  function bindLabelModal() {
-    const closeBtn = $("nc-label-close");
-    if (closeBtn) closeBtn.addEventListener("click", closeLabelModal);
-    const modal = $("nc-label-modal");
-    if (modal) modal.addEventListener("click", e => { if (e.target === modal) closeLabelModal(); });
-
-    const printBtn = $("nc-label-print");
-    if (printBtn) printBtn.addEventListener("click", () => {
-      const statusEl = $("nc-label-status");
-      if (!state.labelItem) return;
-      if (!window.BrowserPrint) {
-        statusEl.textContent = "Zebra Browser Print isn't running on this machine. Use the Download .zpl link and print it from Zebra's utility, or install Browser Print from Zebra's site.";
-        return;
-      }
-      // Standard Zebra Browser Print JS SDK flow: grab the default printer,
-      // send raw ZPL to it. See https://www.zebra.com/us/en/products/software/barcode-printers/link-os/browser-print.html
-      window.BrowserPrint.getDefaultDevice("printer", device => {
-        if (!device) {
-          statusEl.textContent = "No default Zebra printer found in Browser Print.";
-          return;
-        }
-        device.send(state.labelItem.zpl, () => {
-          statusEl.textContent = `Sent ${state.labelItem.number} to ${device.name}.`;
-        }, err => {
-          statusEl.textContent = "Print failed: " + err;
-        });
-      }, err => {
-        statusEl.textContent = "Could not reach Browser Print: " + err;
-      });
-    });
-  }
-
   function refreshFilerBadge() {
     const badge = $("nc-filer-badge");
     if (badge && window.NC_USER && window.NC_USER.username) {
@@ -337,7 +374,6 @@
     bindExport();
     bindTableActions();
     bindEditModal();
-    bindLabelModal();
     loadItems();
   }
 

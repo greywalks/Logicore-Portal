@@ -1641,21 +1641,6 @@
 </div>
 
 <!-- Print label modal -->
-<div id="nc-label-modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background: rgba(0,0,0,.6);">
-  <div class="bg-ink-50 border border-steel/40 rounded-lg p-6 w-full max-w-md">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-lg font-semibold text-slate-100">Print Label — <span id="nc-label-number" class="text-accent"></span></h2>
-      <button id="nc-label-close" class="text-steel hover:text-accent text-xl leading-none">&times;</button>
-    </div>
-    <p class="text-steel text-xs mb-4">3" x 4" label via Zebra Browser Print (must be installed and running on this machine).</p>
-    <div id="nc-label-status" class="text-xs font-mono text-steel mb-4"></div>
-    <div class="flex items-center gap-3">
-      <button id="nc-label-print" class="bg-accent text-ink font-semibold py-2 px-5 rounded-lg text-sm hover:bg-accent-dim transition-all">Print</button>
-      <a id="nc-label-download" class="text-xs font-mono text-steel border border-steel/40 rounded px-3 py-2 hover:text-accent hover:border-accent transition-colors" href="#">Download .zpl</a>
-    </div>
-  </div>
-</div>
-
 <!-- ══════════════════════════════════════════════════════════
      PORTAL TAB: TBD 2 (placeholder)
 ══════════════════════════════════════════════════════════ -->
@@ -1725,11 +1710,6 @@
 <script>
   window.NC_USER = { username: {{ (auth_user.username if auth_user else '')|tojson }} };
 </script>
-<!-- Zebra Browser Print SDK — download "BrowserPrint-3.x.min.js" from Zebra's
-     own site (https://www.zebra.com → Browser Print) and drop it in
-     static/js/, then uncomment this line. Without it, label printing falls
-     back to a downloadable .zpl file. -->
-<!-- <script src="/static/js/BrowserPrint-3.1.250.min.js"></script> -->
 <script src="/static/js/app.js" defer></script>
 <script src="/static/js/nonconforming.js" defer></script>
 </body>
