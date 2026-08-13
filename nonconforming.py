@@ -332,34 +332,57 @@ def export_xlsx(rows):
 # Zebra label (ZPL) — 3" x 4" @ 203dpi (609 x 812 dots)
 # ─────────────────────────────────────────────────────────────────────────
 
-def build_zpl(item):
-    """A simple 3x4 label: big Number (also as a barcode), Model, Serial.
-    Kept deliberately plain — easy to hand-tune in Zebra's ZPL if the exact
-    layout needs to change later."""
-    number = item.get("number") or ""
-    model = item.get("model") or ""
-    serial = item.get("serial") or ""
-    ticket = item.get("ticket_no") or ""
+LABEL_W = 609   # 3in @ 203dpi
+LABEL_H = 812   # 4in @ 203dpi
+_MARGIN = 30
+_GAP = 30
+_USABLE_W = LABEL_W - 2 * _MARGIN
 
-    zpl = f"""^XA
-^PW609
-^LL812
-^CF0,60
-^FO40,40^FDSMS NonConforming^FS
-^FO40,110^GB529,4,4^FS
-^CF0,110
-^FO40,150^FD{number}^FS
-^BY3,3,120
-^FO40,280^BCN,120,Y,N,N^FD{number}^FS
-^CF0,40
-^FO40,440^FDModel:^FS
-^CF0,36
-^FO40,480^FD{model}^FS
-^CF0,40
-^FO40,540^FDSerial:^FS
-^CF0,36
-^FO40,580^FD{serial}^FS
-^CF0,30
-^FO40,650^FDTicket #: {ticket}^FS
+
+def _fit_height(text, cap):
+    """Largest font height (dots) that keeps `text` inside the label's
+    usable width, capped at `cap`. Zebra's font 0 glyphs run roughly
+    0.65x as wide as they are tall for this character set (letters +
+    digits + hyphen); that ratio is what keeps this from clipping."""
+    n = max(len(text), 1)
+    h = _USABLE_W / (n * 0.65)
+    return max(40, min(cap, int(h)))
+
+
+def build_zpl(item):
+    """3x4 label showing ONLY the Number, as big as the label allows.
+    If the number has a hyphen (e.g. "AD26-1"), it's split into two
+    stacked centered lines at the last hyphen ("AD26" / "1") — that lets
+    each line use a much larger font than a single line could at this
+    label width, so the number is unmistakable at a glance.
+    Deliberately plain — easy to hand-tune in ZPL if the layout needs
+    to change later."""
+    number = (item.get("number") or "").strip()
+
+    if "-" in number:
+        top, _, bottom = number.rpartition("-")
+    else:
+        top, bottom = number, ""
+
+    if bottom:
+        avail_per_line = (LABEL_H - 2 * _MARGIN - _GAP) / 2
+        h = min(_fit_height(top, avail_per_line), _fit_height(bottom, avail_per_line))
+        y1 = _MARGIN
+        y2 = _MARGIN + h + _GAP
+        zpl = f"""^XA
+^PW{LABEL_W}
+^LL{LABEL_H}
+^CF0,{h}
+^FO0,{y1}^FB{LABEL_W},1,0,C,0^FD{top}^FS
+^FO0,{y2}^FB{LABEL_W},1,0,C,0^FD{bottom}^FS
+^XZ"""
+    else:
+        h = _fit_height(top, LABEL_H - 2 * _MARGIN)
+        y = int((LABEL_H - h) / 2)
+        zpl = f"""^XA
+^PW{LABEL_W}
+^LL{LABEL_H}
+^CF0,{h}
+^FO0,{y}^FB{LABEL_W},1,0,C,0^FD{top}^FS
 ^XZ"""
     return zpl
