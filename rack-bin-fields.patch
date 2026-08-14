@@ -1,0 +1,115 @@
+diff --git a/nonconforming.py b/nonconforming.py
+index a89732f..11ae8a2 100644
+--- a/nonconforming.py
++++ b/nonconforming.py
+@@ -33,7 +33,7 @@ DB_PATH = BASE_DIR / "nonconforming.db"
+ EDITABLE_FIELDS = [
+     "ticket_no", "model", "serial", "ra_no", "tracking", "carrier",
+     "address", "status", "ussi_resolution", "addtl_info",
+-    "origin_company", "store_no",
++    "origin_company", "store_no", "rack", "bin",
+ ]
+ REQUIRED_FIELDS = ["model", "serial", "carrier"]
+ 
+@@ -77,6 +77,8 @@ def init_db():
+             addtl_info TEXT,
+             origin_company TEXT,
+             store_no TEXT,
++            rack TEXT,
++            bin TEXT,
+             filed_by_user_id INTEGER,
+             filed_by_username TEXT,
+             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+@@ -98,10 +100,22 @@ def init_db():
+     db.execute("CREATE INDEX IF NOT EXISTS idx_items_number ON items(number)")
+     db.execute("CREATE INDEX IF NOT EXISTS idx_items_serial ON items(serial)")
+     db.execute("CREATE INDEX IF NOT EXISTS idx_items_model ON items(model)")
++    _migrate(db)
+     db.commit()
+     db.close()
+ 
+ 
++def _migrate(db):
++    """Add columns to an existing `items` table that predates them.
++    CREATE TABLE IF NOT EXISTS above only applies to brand-new databases —
++    a database created before a given column existed needs it added by
++    hand, or every insert/update touching that column breaks."""
++    existing = {row["name"] for row in db.execute("PRAGMA table_info(items)")}
++    for col in ("rack", "bin"):
++        if col not in existing:
++            db.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
++
++
+ # ─────────────────────────────────────────────────────────────────────────
+ # Number generation
+ # ─────────────────────────────────────────────────────────────────────────
+@@ -217,7 +231,7 @@ def delete_item(item_id):
+ SEARCHABLE_COLUMNS = [
+     "number", "ticket_no", "model", "serial", "ra_no", "tracking", "carrier",
+     "address", "status", "ussi_resolution", "addtl_info", "origin_company",
+-    "store_no", "filed_by_username",
++    "store_no", "rack", "bin", "filed_by_username",
+ ]
+ 
+ 
+@@ -288,6 +302,8 @@ EXPORT_COLUMNS = [
+     ("addtl_info", "Addtl Info"),
+     ("origin_company", "Origin Company"),
+     ("store_no", "Store #"),
++    ("rack", "Rack"),
++    ("bin", "Bin"),
+     ("filed_by_username", "Filed By"),
+ ]
+ 
+diff --git a/static/js/nonconforming.js b/static/js/nonconforming.js
+index 494d2bb..aef9882 100644
+--- a/static/js/nonconforming.js
++++ b/static/js/nonconforming.js
+@@ -24,6 +24,8 @@
+     addtl_info: "Addtl Info",
+     origin_company: "Origin Company",
+     store_no: "Store #",
++    rack: "Rack",
++    bin: "Bin",
+   };
+   const REQUIRED = ["model", "serial", "carrier"];
+ 
+@@ -75,6 +77,8 @@
+         <td class="py-2 pr-3">${escapeHtml(it.date_added)}</td>
+         <td class="py-2 pr-3">${escapeHtml(it.model)}</td>
+         <td class="py-2 pr-3">${escapeHtml(it.serial)}</td>
++        <td class="py-2 pr-3">${escapeHtml(it.rack)}</td>
++        <td class="py-2 pr-3">${escapeHtml(it.bin)}</td>
+         <td class="py-2 pr-3">${escapeHtml(it.ticket_no)}</td>
+         <td class="py-2 pr-3">${escapeHtml(it.carrier)}</td>
+         <td class="py-2 pr-3">${escapeHtml(it.status)}</td>
+diff --git a/templates/index.html b/templates/index.html
+index 7d46e51..909351b 100644
+--- a/templates/index.html
++++ b/templates/index.html
+@@ -1540,6 +1540,16 @@
+           <input type="text" name="store_no" placeholder="If on paperwork"
+             class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
+         </div>
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Rack</label>
++          <input type="text" name="rack" placeholder="Warehouse rack"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
++        <div>
++          <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Bin</label>
++          <input type="text" name="bin" placeholder="Warehouse bin"
++            class="w-full bg-ink-100 border border-steel/50 rounded-lg px-3 py-2.5 text-sm text-slate-200 transition-all" />
++        </div>
+ 
+         <div>
+           <label class="block text-xs text-steel mb-1.5 uppercase tracking-wide font-mono">Origin Company</label>
+@@ -1600,6 +1610,8 @@
+             <th class="py-2 pr-3">Date</th>
+             <th class="py-2 pr-3">Model</th>
+             <th class="py-2 pr-3">Serial</th>
++            <th class="py-2 pr-3">Rack</th>
++            <th class="py-2 pr-3">Bin</th>
+             <th class="py-2 pr-3">Ticket #</th>
+             <th class="py-2 pr-3">Carrier</th>
+             <th class="py-2 pr-3">Status</th>
