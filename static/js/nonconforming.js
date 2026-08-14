@@ -24,6 +24,8 @@
     addtl_info: "Addtl Info",
     origin_company: "Origin Company",
     store_no: "Store #",
+    rack: "Rack",
+    bin: "Bin",
   };
   const REQUIRED = ["model", "serial", "carrier"];
 
@@ -75,6 +77,8 @@
         <td class="py-2 pr-3">${escapeHtml(it.date_added)}</td>
         <td class="py-2 pr-3">${escapeHtml(it.model)}</td>
         <td class="py-2 pr-3">${escapeHtml(it.serial)}</td>
+        <td class="py-2 pr-3">${escapeHtml(it.rack)}</td>
+        <td class="py-2 pr-3">${escapeHtml(it.bin)}</td>
         <td class="py-2 pr-3">${escapeHtml(it.ticket_no)}</td>
         <td class="py-2 pr-3">${escapeHtml(it.carrier)}</td>
         <td class="py-2 pr-3">${escapeHtml(it.status)}</td>

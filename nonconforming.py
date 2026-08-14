@@ -33,7 +33,7 @@ DB_PATH = BASE_DIR / "nonconforming.db"
 EDITABLE_FIELDS = [
     "ticket_no", "model", "serial", "ra_no", "tracking", "carrier",
     "address", "status", "ussi_resolution", "addtl_info",
-    "origin_company", "store_no",
+    "origin_company", "store_no", "rack", "bin",
 ]
 REQUIRED_FIELDS = ["model", "serial", "carrier"]
 
@@ -77,6 +77,8 @@ def init_db():
             addtl_info TEXT,
             origin_company TEXT,
             store_no TEXT,
+            rack TEXT,
+            bin TEXT,
             filed_by_user_id INTEGER,
             filed_by_username TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -98,8 +100,20 @@ def init_db():
     db.execute("CREATE INDEX IF NOT EXISTS idx_items_number ON items(number)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_items_serial ON items(serial)")
     db.execute("CREATE INDEX IF NOT EXISTS idx_items_model ON items(model)")
+    _migrate(db)
     db.commit()
     db.close()
+
+
+def _migrate(db):
+    """Add columns to an existing `items` table that predates them.
+    CREATE TABLE IF NOT EXISTS above only applies to brand-new databases —
+    a database created before a given column existed needs it added by
+    hand, or every insert/update touching that column breaks."""
+    existing = {row["name"] for row in db.execute("PRAGMA table_info(items)")}
+    for col in ("rack", "bin"):
+        if col not in existing:
+            db.execute(f"ALTER TABLE items ADD COLUMN {col} TEXT")
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -217,7 +231,7 @@ def delete_item(item_id):
 SEARCHABLE_COLUMNS = [
     "number", "ticket_no", "model", "serial", "ra_no", "tracking", "carrier",
     "address", "status", "ussi_resolution", "addtl_info", "origin_company",
-    "store_no", "filed_by_username",
+    "store_no", "rack", "bin", "filed_by_username",
 ]
 
 
@@ -288,6 +302,8 @@ EXPORT_COLUMNS = [
     ("addtl_info", "Addtl Info"),
     ("origin_company", "Origin Company"),
     ("store_no", "Store #"),
+    ("rack", "Rack"),
+    ("bin", "Bin"),
     ("filed_by_username", "Filed By"),
 ]
 
