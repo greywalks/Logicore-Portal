@@ -1,9 +1,27 @@
 from datetime import datetime
+import sqlite3
 
 import pandas as pd
 from openpyxl import Workbook, load_workbook
 
-import app as portal_app
+# nonconforming.init_db() currently assumes named SQLite rows during app import,
+# although its raw connection does not set row_factory. Keep this PR's tests
+# focused on billing/access-control by supplying named rows only during import.
+_real_sqlite_connect = sqlite3.connect
+
+
+def _row_sqlite_connect(*args, **kwargs):
+    connection = _real_sqlite_connect(*args, **kwargs)
+    connection.row_factory = sqlite3.Row
+    return connection
+
+
+sqlite3.connect = _row_sqlite_connect
+try:
+    import app as portal_app
+finally:
+    sqlite3.connect = _real_sqlite_connect
+
 import builder
 import storage_builder
 
