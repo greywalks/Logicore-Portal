@@ -7,6 +7,13 @@ on:
     paths:
       - .github/patches/pr1.patch
       - .github/workflows/apply-pr1.yml
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/patches/pr1.patch
+      - .github/workflows/apply-pr1.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
