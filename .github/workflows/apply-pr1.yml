@@ -1,18 +1,13 @@
-name: Apply PR 1 stabilization patch
+name: Apply PR 1 stabilization changes
 
 on:
   push:
     branches:
       - fix/billing-and-access-control
     paths:
-      - .github/patches/pr1.patch
+      - .github/scripts/apply_pr1.py
       - .github/workflows/apply-pr1.yml
-  pull_request:
-    branches:
-      - main
-    paths:
-      - .github/patches/pr1.patch
-      - .github/workflows/apply-pr1.yml
+      - tests/test_billing_and_access_control.py
   workflow_dispatch:
 
 permissions:
@@ -22,33 +17,36 @@ jobs:
   apply-test-commit:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out stabilization branch
+        uses: actions/checkout@v4
         with:
           ref: fix/billing-and-access-control
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Apply patch
-        run: |
-          git apply --check --recount .github/patches/pr1.patch
-          git apply --recount .github/patches/pr1.patch
+      - name: Apply deterministic source updates
+        run: python .github/scripts/apply_pr1.py
 
-      - name: Install dependencies
+      - name: Install test dependencies
         run: python -m pip install -r requirements-dev.txt
 
-      - name: Compile and test
-        run: |
-          python -m compileall -q .
-          pytest -q
+      - name: Compile changed Python
+        run: python -m compileall -q app.py storage_builder.py tests
 
-      - name: Commit stabilized implementation
+      - name: Run regression suite
+        run: pytest -v
+
+      - name: Commit verified implementation
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          rm -f .github/patches/pr1.patch .github/workflows/apply-pr1.yml
-          git add -A
-          git commit -m "Fix billing and output access controls"
+          git add app.py storage_builder.py tests
+          git rm -f .github/patches/pr1.patch
+          git rm -f .github/scripts/apply_pr1.py
+          git rm -f .github/workflows/apply-pr1.yml
+          git commit -m "Fix billing calculations and output access control"
           git push origin HEAD:fix/billing-and-access-control
