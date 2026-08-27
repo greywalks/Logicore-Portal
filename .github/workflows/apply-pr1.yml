@@ -8,6 +8,13 @@ on:
       - .github/scripts/apply_pr1.py
       - .github/workflows/apply-pr1.yml
       - tests/test_billing_and_access_control.py
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/scripts/apply_pr1.py
+      - .github/workflows/apply-pr1.yml
+      - tests/test_billing_and_access_control.py
   workflow_dispatch:
 
 permissions:
@@ -73,6 +80,7 @@ jobs:
         run: PYTHONPATH=. pytest -v
 
       - name: Commit verified implementation
+        if: github.event_name != 'pull_request'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
