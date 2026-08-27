@@ -35,14 +35,31 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: Tighten updater match
+      - name: Harden updater matches
         run: |
           python - <<'PY'
           from pathlib import Path
 
           path = Path('.github/scripts/apply_pr1.py')
           text = path.read_text(encoding='utf-8')
-          old = '''    text = replace_once(
+
+          helper_old = '''def replace_once(text, old, new, label):
+              if new in text:
+                  return text
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)'''
+          helper_new = '''def replace_once(text, old, new, label):
+              count = text.count(old)
+              if count != 1:
+                  raise RuntimeError(f"{label}: expected one match, found {count}")
+              return text.replace(old, new, 1)'''
+          if text.count(helper_old) != 1:
+              raise SystemExit(f'Expected one replace_once helper, found {text.count(helper_old)}')
+          text = text.replace(helper_old, helper_new, 1)
+
+          call_old = '''    text = replace_once(
                   text,
                   ''' + "'''" + '''                     small_parts_df, unit_picks_count, small_part_picks,
                                part_type_totals, line_prices, part_prices)''' + "'''" + ''',
@@ -50,7 +67,7 @@ jobs:
                                line_prices)''' + "'''" + ''',
                   "storage breakdown call",
               )'''
-          new = '''    text = replace_once(
+          call_new = '''    text = replace_once(
                   text,
                   ''' + "'''" + '''    _build_breakdown(wb, invoice_date, completed_date, call_id, customer,
                                unit_storage_df, pallet_count, units_received,
@@ -62,9 +79,11 @@ jobs:
                                line_prices)''' + "'''" + ''',
                   "storage breakdown call",
               )'''
-          if text.count(old) != 1:
-              raise SystemExit(f'Expected one updater block, found {text.count(old)}')
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          if text.count(call_old) != 1:
+              raise SystemExit(f'Expected one storage call updater block, found {text.count(call_old)}')
+          text = text.replace(call_old, call_new, 1)
+
+          path.write_text(text, encoding='utf-8')
           PY
 
       - name: Apply deterministic source updates
