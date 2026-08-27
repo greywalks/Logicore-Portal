@@ -28,6 +28,38 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: Tighten updater match
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/scripts/apply_pr1.py')
+          text = path.read_text(encoding='utf-8')
+          old = '''    text = replace_once(
+                  text,
+                  ''' + "'''" + '''                     small_parts_df, unit_picks_count, small_part_picks,
+                               part_type_totals, line_prices, part_prices)''' + "'''" + ''',
+                  ''' + "'''" + '''                     small_parts_df, unit_picks_count, small_part_picks,
+                               line_prices)''' + "'''" + ''',
+                  "storage breakdown call",
+              )'''
+          new = '''    text = replace_once(
+                  text,
+                  ''' + "'''" + '''    _build_breakdown(wb, invoice_date, completed_date, call_id, customer,
+                               unit_storage_df, pallet_count, units_received,
+                               small_parts_df, unit_picks_count, small_part_picks,
+                               part_type_totals, line_prices, part_prices)''' + "'''" + ''',
+                  ''' + "'''" + '''    _build_breakdown(wb, invoice_date, completed_date, call_id, customer,
+                               unit_storage_df, pallet_count, units_received,
+                               small_parts_df, unit_picks_count, small_part_picks,
+                               line_prices)''' + "'''" + ''',
+                  "storage breakdown call",
+              )'''
+          if text.count(old) != 1:
+              raise SystemExit(f'Expected one updater block, found {text.count(old)}')
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
       - name: Apply deterministic source updates
         run: python .github/scripts/apply_pr1.py
 
