@@ -70,7 +70,7 @@ jobs:
         run: python -m compileall -q app.py storage_builder.py tests
 
       - name: Run regression suite
-        run: pytest -v
+        run: PYTHONPATH=. pytest -v
 
       - name: Commit verified implementation
         run: |
