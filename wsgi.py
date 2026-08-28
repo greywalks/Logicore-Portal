@@ -6,11 +6,29 @@ its own Flask application. Render should start `wsgi:application`.
 import re
 import threading
 import webbrowser
+from pathlib import Path
 
 from jinja2 import BaseLoader
 from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
 import portal_auth
+import nonconforming
+from runtime_storage import resolve_runtime_db
+
+# Resolve persistent runtime databases before importing app.py. app.py calls
+# portal_auth.init_db() and nonconforming.init_db() during import, so these
+# module-level paths must be set first.
+portal_auth.DB_PATH = resolve_runtime_db(
+    "portal_auth.db",
+    "PORTAL_AUTH_DB_PATH",
+    Path(__file__).parent / "portal_auth.db",
+)
+nonconforming.DB_PATH = resolve_runtime_db(
+    "nonconforming.db",
+    "NONCONFORMING_DB_PATH",
+    Path(__file__).parent / "nonconforming.db",
+)
+
 from app import app as portal_app
 from inventory_management.app import app as inventory_app, init_db as _inventory_init_db, db_connect as _inventory_db_connect, clean as _inventory_clean, DATA_DIR as _inventory_data_dir
 from inventory_management.shipping_history import register_shipping_history
