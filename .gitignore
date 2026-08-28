@@ -30,6 +30,14 @@ training_tracker/training_planner.db-*
 /training_tracker/signoff_uploads/*
 !/training_tracker/signoff_uploads/.gitkeep
 
+# Inventory Management — runtime DB and retained source uploads. In production
+# set INVENTORY_DATA_DIR to the mounted Render persistent-disk path so these
+# survive deploys without ever being committed to the repository.
+/inventory_management/data/*
+!/inventory_management/data/.gitkeep
+inventory_management/*.db
+inventory_management/*.db-*
+
 # Dev-only Tailwind build tooling
 build/node_modules/
 
