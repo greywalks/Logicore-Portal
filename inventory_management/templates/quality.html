@@ -5,7 +5,7 @@
 <div style="display:flex;gap:18px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap">
   <div>
     <h1 class="im-title">Promethean Data Quality</h1>
-    <p class="im-sub">Audit the current Inventory Export for serial/model mismatches, unknown values, and grade-specific model suffix rules.</p>
+    <p class="im-sub">Audit the current Inventory Export for serial/model mismatches, approved parts/models, and grade-specific model suffix rules.</p>
   </div>
   {% if reference %}<span class="im-badge accent">Reference {{ reference.version }}</span>{% endif %}
 </div>
@@ -13,45 +13,38 @@
 {% if not reference %}
 <div class="im-card" style="margin-top:22px;border-color:rgba(245,158,11,.45)">
   <div style="font-size:16px;font-weight:600;color:var(--text)">Reference data required</div>
-  <p class="im-sub">The checker code is installed, but the Promethean serial/parts reference is intentionally stored on the persistent disk rather than in GitHub. Upload the generated reference JSON once; it will remain at <span class="im-code">{{ reference_path }}</span>.</p>
-  <form method="post" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px">
-    <input type="file" name="reference" accept="application/json,.json" required>
-    <button class="im-btn" type="submit">Install reference</button>
-  </form>
+  <p class="im-sub">Upload the Promethean serial/parts reference JSON once. It remains on persistent storage at <span class="im-code">{{ reference_path }}</span>.</p>
+  <form method="post" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px"><input type="file" name="reference" accept="application/json,.json" required><button class="im-btn" type="submit">Install reference</button></form>
 </div>
 {% else %}
 <div class="im-grid" style="margin-top:18px">
   <div class="im-card"><div class="im-kpi">{{ reference.models }}</div><div class="im-kpi-label">Reference models</div></div>
   <div class="im-card"><div class="im-kpi">{{ reference.parts }}</div><div class="im-kpi-label">Known part codes</div></div>
-  <div class="im-card"><div class="im-kpi">{{ overrides|length }}</div><div class="im-kpi-label">Approved serial mappings</div></div>
-  <div class="im-card"><div class="im-kpi" style="font-size:16px">Persistent</div><div class="im-kpi-label">Reference & overrides</div></div>
+  <div class="im-card"><div class="im-kpi">{{ (whitelist.part|length) + (whitelist.model|length) }}</div><div class="im-kpi-label">Global whitelist</div></div>
+  <div class="im-card"><div class="im-kpi">{{ overrides|length }}</div><div class="im-kpi-label">Serial mappings</div></div>
 </div>
 
 <div class="im-card" style="margin-top:22px">
-  <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
-    <div><h2 style="font-size:17px;color:var(--text);font-weight:600">Single-item checker</h2><p class="im-sub">Serial alone will decode a supported model. Add a recorded model and/or part number to validate it.</p></div>
-  </div>
+  <div><h2 style="font-size:17px;color:var(--text);font-weight:600">Single-item checker</h2><p class="im-sub">Serial alone decodes a supported model. Add a recorded model and/or part number to validate it.</p></div>
   <form method="get" action="{{ script_root }}/quality" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:9px;margin-top:14px">
     <input name="serial" value="{{ request.args.get('serial','') }}" placeholder="Serial number">
     <input name="model" value="{{ request.args.get('model','') }}" placeholder="Recorded model (optional)">
     <input name="part" value="{{ request.args.get('part','') }}" placeholder="Part number (optional)">
     <button class="im-btn" type="submit">Check</button>
   </form>
-  {% if manual %}
-  <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px">
+  {% if manual %}<div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px">
     {% if manual.serial_only %}<div class="im-card"><div class="im-kpi-label">Decoded model</div><div style="font-size:19px;font-weight:650;color:var(--text);margin-top:6px">{{ manual.serial_only.model }}</div><div class="im-sub">{% if manual.serial_only.year %}Manufacture year {{ manual.serial_only.year }} ({{ manual.serial_only.year_code }}){% else %}Year code {{ manual.serial_only.year_code }}{% endif %}</div></div>{% endif %}
-    {% if manual.model %}<div class="im-card"><div class="im-kpi-label">Model check</div><div style="font-size:17px;font-weight:650;color:var(--text);margin-top:6px">{{ manual.model.status|replace('_',' ')|title }}</div><div class="im-sub">{{ manual.model.message }}</div>{% if manual.model.decoded %}<div class="im-code" style="margin-top:8px">Expected: {{ manual.model.decoded.model }}</div>{% endif %}</div>{% endif %}
-    {% if manual.part %}<div class="im-card"><div class="im-kpi-label">Part check</div><div style="font-size:17px;font-weight:650;color:var(--text);margin-top:6px">{{ manual.part.status|replace('_',' ')|title }}</div><div class="im-sub">{{ manual.part.message }}</div>{% if manual.part.parts_model %}<div class="im-code" style="margin-top:8px">Checked against: {{ manual.part.parts_model }}</div>{% endif %}{% if manual.part.status=='unknown_part' %}<div class="im-sub" style="margin-top:6px">Not found anywhere in the installed parts reference.</div>{% elif manual.part.known_on and manual.part.status!='ok' %}<div class="im-sub" style="margin-top:6px">Known for: {{ manual.part.known_on[:8]|join(', ') }}{% if manual.part.known_on|length > 8 %} +{{ manual.part.known_on|length - 8 }} more{% endif %}</div>{% endif %}</div>{% endif %}
-  </div>
-  {% endif %}
+    {% if manual.model %}<div class="im-card"><div class="im-kpi-label">Model check</div><div style="font-size:17px;font-weight:650;color:var(--text);margin-top:6px">{{ manual.model.status|replace('_',' ')|title }}</div><div class="im-sub">{{ manual.model.message }}</div>{% if manual.model.decoded %}<div class="im-code" style="margin-top:8px">Decoded: {{ manual.model.decoded.model }}</div>{% endif %}</div>{% endif %}
+    {% if manual.part %}<div class="im-card"><div class="im-kpi-label">Part check</div><div style="font-size:17px;font-weight:650;color:var(--text);margin-top:6px">{{ manual.part.status|replace('_',' ')|title }}</div><div class="im-sub">{{ manual.part.message }}</div></div>{% endif %}
+  </div>{% endif %}
 </div>
 
 <div class="im-card" style="margin-top:22px">
   <div style="display:flex;justify-content:space-between;gap:14px;align-items:center;flex-wrap:wrap">
-    <div><h2 style="font-size:17px;color:var(--text);font-weight:600">Current inventory audit</h2><p class="im-sub">Runs only against the most recently imported Inventory Export snapshot. Receiving, Shipping, Repair and FedEx history are not included in the full audit.</p></div>
+    <div><h2 style="font-size:17px;color:var(--text);font-weight:600">Current inventory audit</h2><p class="im-sub">Runs only against the most recently imported Inventory Export snapshot.</p></div>
     <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="im-btn" href="{{ script_root }}/quality?audit=1">Run audit</a>{% if audit %}<a class="im-btn secondary" href="{{ script_root }}/quality/export.xlsx">Export Excel</a><a class="im-btn secondary" href="{{ script_root }}/quality/export.csv">Export CSV</a>{% endif %}</div>
   </div>
-  <div class="im-sub" style="margin-top:12px">Grade rule: <strong>B</strong> and <strong>R</strong> units must end in <span class="im-code">-NA-R</span>. <strong>A</strong> stock is treated as normally ending in <span class="im-code">-NA</span> and is reported as a warning when it does not.</div>
+  <div class="im-sub" style="margin-top:12px">Grade rule: <strong>B</strong> and <strong>R</strong> must use the complete expected model ending <span class="im-code">-NA-R</span>. <strong>A</strong> stock normally uses the complete expected model ending <span class="im-code">-NA</span>.</div>
 </div>
 
 {% if audit %}
@@ -62,19 +55,36 @@
   <div class="im-card"><div class="im-kpi">{{ audit.errors }}</div><div class="im-kpi-label">Errors</div></div>
   <div class="im-card"><div class="im-kpi">{{ audit.warnings }}</div><div class="im-kpi-label">Warnings</div></div>
 </div>
-<div class="im-card" style="margin-top:12px;padding:12px 16px"><span class="im-code">{{ audit.recognized_parts }}</span> inventory rows matched known Promethean part numbers and were not subjected to panel suffix checks. <span class="im-code">{{ audit.unmatched_count }}</span> rows need a model mapping/review.</div>
+<div class="im-card" style="margin-top:12px;padding:12px 16px"><span class="im-code">{{ audit.recognized_parts }}</span> reference part rows, <span class="im-code">{{ audit.whitelisted_parts }}</span> globally approved part/value rows, and <span class="im-code">{{ audit.whitelisted_models }}</span> globally approved model rows were recognized. <span class="im-code">{{ audit.unmatched_count }}</span> rows still need review.</div>
 
-<div style="display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:28px;margin-bottom:10px;flex-wrap:wrap"><div><h2 style="font-size:17px;color:var(--text);font-weight:600">Audit issues</h2><p class="im-sub">Model mismatches and grade-specific suffix problems in the current Inventory Export.</p></div><span class="im-badge">Showing up to 750</span></div>
+<div style="display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:28px;margin-bottom:10px;flex-wrap:wrap"><div><h2 style="font-size:17px;color:var(--text);font-weight:600">Audit issues</h2><p class="im-sub">Expected Model includes the required A/B/R stock suffix.</p></div><span class="im-badge">Showing up to 750</span></div>
 <div class="im-card" style="padding:0;overflow:auto"><table class="im-table"><thead><tr><th>Issue</th><th>Serial</th><th>Grade</th><th>Recorded</th><th>Expected</th><th>Location</th><th>Source row</th></tr></thead><tbody>{% for i in audit.issues[:750] %}<tr><td><span class="im-badge{% if i.severity=='error' %} accent{% endif %}">{{ i.issue_type }}</span><div class="im-sub" style="font-size:11px">{{ i.message }}</div></td><td class="im-code"><a href="{{ script_root }}/serial/{{ i.serial_number }}">{{ i.serial_number }}</a></td><td class="im-code">{{ i.grade }}</td><td class="im-code">{{ i.model_number }}</td><td class="im-code">{{ i.expected_model }}</td><td>{{ i.warehouse }}{% if i.rack %} / {{ i.rack }}{% endif %}{% if i.bin %} / {{ i.bin }}{% endif %}</td><td><div>{{ i.original_filename }}</div><div class="im-code">{{ i.source_row_key }}</div></td></tr>{% else %}<tr><td colspan="7" class="im-empty">No inventory audit issues found.</td></tr>{% endfor %}</tbody></table></div>
 
-<div style="display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:28px;margin-bottom:10px;flex-wrap:wrap"><div><h2 style="font-size:17px;color:var(--text);font-weight:600">Needs model mapping</h2><p class="im-sub">Serial/model combinations the checker cannot determine confidently. Enter the known correct model to approve it for this serial on future audits.</p></div><span class="im-badge">{{ audit.unmatched_count }} unresolved</span></div>
-<div class="im-card" style="padding:0;overflow:auto"><table class="im-table"><thead><tr><th>Serial</th><th>Grade</th><th>Current value</th><th>Location</th><th>Reason</th><th>Approve correct model</th></tr></thead><tbody>{% for i in audit.unmatched[:500] %}<tr><td class="im-code"><a href="{{ script_root }}/serial/{{ i.serial_number }}">{{ i.serial_number }}</a></td><td class="im-code">{{ i.grade }}</td><td class="im-code">{{ i.model_number }}</td><td>{{ i.warehouse }}{% if i.rack %} / {{ i.rack }}{% endif %}{% if i.bin %} / {{ i.bin }}{% endif %}</td><td class="im-sub">{{ i.message }}</td><td><form method="post" action="{{ script_root }}/quality/override" style="display:flex;gap:6px;min-width:360px"><input type="hidden" name="serial" value="{{ i.serial_number }}"><input name="approved_model" value="{{ i.model_number if i.known_model else '' }}" placeholder="Correct model, e.g. AP7-U75-NA-R" required style="min-width:220px"><button class="im-btn" type="submit" style="padding:7px 10px">Approve</button></form></td></tr>{% else %}<tr><td colspan="6" class="im-empty">No unresolved model mappings.</td></tr>{% endfor %}</tbody></table></div>
+<div style="display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:28px;margin-bottom:10px;flex-wrap:wrap"><div><h2 style="font-size:17px;color:var(--text);font-weight:600">Needs review / mapping</h2><p class="im-sub">For a one-off serial, map the correct model. For a value that is valid everywhere, approve it globally as a Part / Value or Model.</p></div><span class="im-badge">{{ audit.unmatched_count }} unresolved</span></div>
+<div class="im-card" style="padding:0;overflow:auto"><table class="im-table"><thead><tr><th>Serial</th><th>Grade</th><th>Current value</th><th>Location</th><th>Reason</th><th>Actions</th></tr></thead><tbody>
+{% for i in audit.unmatched[:500] %}<tr>
+<td class="im-code"><a href="{{ script_root }}/serial/{{ i.serial_number }}">{{ i.serial_number }}</a></td><td class="im-code">{{ i.grade }}</td><td class="im-code">{{ i.model_number }}</td><td>{{ i.warehouse }}{% if i.rack %} / {{ i.rack }}{% endif %}{% if i.bin %} / {{ i.bin }}{% endif %}</td><td class="im-sub">{{ i.message }}</td>
+<td style="min-width:470px"><div style="display:flex;gap:6px;flex-wrap:wrap">
+<form method="post" action="{{ script_root }}/quality/override" style="display:flex;gap:6px"><input type="hidden" name="serial" value="{{ i.serial_number }}"><input name="approved_model" value="{{ i.model_number if i.known_model else '' }}" placeholder="Correct model for this serial" required style="min-width:210px"><button class="im-btn" type="submit" style="padding:7px 10px">Map serial</button></form>
+{% if i.model_number %}<form method="post" action="{{ script_root }}/quality/whitelist"><input type="hidden" name="kind" value="part"><input type="hidden" name="value" value="{{ i.model_number }}"><button class="im-btn secondary" type="submit" style="padding:7px 10px">Approve as Part / Value</button></form><form method="post" action="{{ script_root }}/quality/whitelist"><input type="hidden" name="kind" value="model"><input type="hidden" name="value" value="{{ i.model_number }}"><button class="im-btn secondary" type="submit" style="padding:7px 10px">Approve as Model</button></form>{% endif %}
+</div></td></tr>{% else %}<tr><td colspan="6" class="im-empty">No unresolved model mappings.</td></tr>{% endfor %}
+</tbody></table></div>
 {% endif %}
 
-<div style="display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:28px;margin-bottom:10px;flex-wrap:wrap"><div><h2 style="font-size:17px;color:var(--text);font-weight:600">Approved model mappings</h2><p class="im-sub">Serial-specific exceptions/known mappings stored in the persistent inventory database. These survive deploys and are applied before the serial decoder.</p></div><span class="im-badge">{{ overrides|length }} approved</span></div>
-<div class="im-card" style="padding:0;overflow:auto"><table class="im-table"><thead><tr><th>Serial</th><th>Approved model</th><th>Note</th><th>Updated</th><th></th></tr></thead><tbody>{% for o in overrides[:500] %}<tr><td class="im-code">{{ o.serial_number }}</td><td class="im-code">{{ o.approved_model }}</td><td>{{ o.note or '' }}</td><td class="im-code">{{ o.updated_at }}</td><td><form method="post" action="{{ script_root }}/quality/override/delete"><input type="hidden" name="serial" value="{{ o.serial_number }}"><button class="im-btn secondary" type="submit" style="padding:6px 9px">Remove</button></form></td></tr>{% else %}<tr><td colspan="5" class="im-empty">No approved mappings yet.</td></tr>{% endfor %}</tbody></table></div>
+<div style="display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:28px;margin-bottom:10px;flex-wrap:wrap"><div><h2 style="font-size:17px;color:var(--text);font-weight:600">Global whitelist</h2><p class="im-sub">Use this for valid parts/values or model numbers that should be recognized every time they appear in current inventory.</p></div><span class="im-badge">{{ (whitelist.part|length) + (whitelist.model|length) }} approved</span></div>
+<div class="im-card">
+<form method="post" action="{{ script_root }}/quality/whitelist" style="display:grid;grid-template-columns:180px minmax(220px,1fr) minmax(220px,1fr) auto;gap:8px;align-items:end">
+<label><span class="im-kpi-label">Type</span><select name="kind" style="width:100%;margin-top:6px"><option value="part">Part / Value</option><option value="model">Model</option></select></label>
+<label><span class="im-kpi-label">Value</span><input name="value" placeholder="e.g. AP-WIFI-BC" required style="width:100%;margin-top:6px"></label>
+<label><span class="im-kpi-label">Note</span><input name="note" placeholder="Optional note" style="width:100%;margin-top:6px"></label>
+<button class="im-btn" type="submit">Add to whitelist</button></form>
+</div>
+<div class="im-card" style="padding:0;overflow:auto;margin-top:10px"><table class="im-table"><thead><tr><th>Type</th><th>Approved value</th><th>Note</th><th>Updated</th><th></th></tr></thead><tbody>{% for kind in ['part','model'] %}{% for key,o in whitelist[kind].items() %}<tr><td><span class="im-badge">{{ 'Part / Value' if kind=='part' else 'Model' }}</span></td><td class="im-code">{{ o.display_value }}</td><td>{{ o.note or '' }}</td><td class="im-code">{{ o.updated_at }}</td><td><form method="post" action="{{ script_root }}/quality/whitelist/delete"><input type="hidden" name="kind" value="{{ kind }}"><input type="hidden" name="value" value="{{ o.display_value }}"><button class="im-btn secondary" type="submit" style="padding:6px 9px">Remove</button></form></td></tr>{% endfor %}{% endfor %}{% if not whitelist.part and not whitelist.model %}<tr><td colspan="5" class="im-empty">No global whitelist entries yet.</td></tr>{% endif %}</tbody></table></div>
 
-<div class="im-card" style="margin-top:24px"><div class="im-kpi-label">Reference maintenance</div><p class="im-sub">To replace the Promethean reference later, upload a newer generated JSON. The existing file is replaced atomically on the persistent disk; GitHub does not contain the internal model/parts data.</p><form method="post" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px"><input type="file" name="reference" accept="application/json,.json" required><button class="im-btn secondary" type="submit">Replace reference</button></form></div>
+<div style="display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:28px;margin-bottom:10px;flex-wrap:wrap"><div><h2 style="font-size:17px;color:var(--text);font-weight:600">Serial-specific model mappings</h2><p class="im-sub">Use only for one-off serial exceptions. These are different from the global whitelist above.</p></div><span class="im-badge">{{ overrides|length }} mapped</span></div>
+<div class="im-card" style="padding:0;overflow:auto"><table class="im-table"><thead><tr><th>Serial</th><th>Approved model</th><th>Note</th><th>Updated</th><th></th></tr></thead><tbody>{% for o in overrides[:500] %}<tr><td class="im-code">{{ o.serial_number }}</td><td class="im-code">{{ o.approved_model }}</td><td>{{ o.note or '' }}</td><td class="im-code">{{ o.updated_at }}</td><td><form method="post" action="{{ script_root }}/quality/override/delete"><input type="hidden" name="serial" value="{{ o.serial_number }}"><button class="im-btn secondary" type="submit" style="padding:6px 9px">Remove</button></form></td></tr>{% else %}<tr><td colspan="5" class="im-empty">No serial-specific mappings yet.</td></tr>{% endfor %}</tbody></table></div>
+
+<div class="im-card" style="margin-top:24px"><div class="im-kpi-label">Reference maintenance</div><p class="im-sub">To replace the Promethean reference later, upload a newer generated JSON.</p><form method="post" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px"><input type="file" name="reference" accept="application/json,.json" required><button class="im-btn secondary" type="submit">Replace reference</button></form></div>
 {% endif %}
-<style>@media(max-width:900px){form[action$="/quality"]{grid-template-columns:1fr!important}.im-card>div[style*="grid-template-columns:repeat(2"]{grid-template-columns:1fr!important}}</style>
+<style>@media(max-width:900px){form[action$="/quality"]{grid-template-columns:1fr!important}form[action$="/quality/whitelist"]{grid-template-columns:1fr!important}}</style>
 {% endblock %}
