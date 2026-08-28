@@ -7,11 +7,13 @@
     <h1 class="im-title">{% if report_kind=='model' %}Model Shipping History{% else %}All Shipping History{% endif %}</h1>
     <p class="im-sub">Outbound shipments from the imported Shipping Export, filtered by shipped date.</p>
   </div>
+  <div style="display:flex;gap:8px;flex-wrap:wrap">
   {% if report_kind=='model' %}
-    {% if model %}<a class="im-btn secondary" href="{{ script_root }}/shipping/model/export.csv?model={{ model|urlencode }}&preset={{ date_range.preset }}&start={{ date_range.start }}&end={{ date_range.end }}">Export CSV</a>{% endif %}
+    {% if model %}<a class="im-btn secondary" href="{{ script_root }}/shipping/model/export.xlsx?model={{ model|urlencode }}&preset={{ date_range.preset }}&start={{ date_range.start }}&end={{ date_range.end }}">Export Excel</a><a class="im-btn secondary" href="{{ script_root }}/shipping/model/export.csv?model={{ model|urlencode }}&preset={{ date_range.preset }}&start={{ date_range.start }}&end={{ date_range.end }}">Export CSV</a>{% endif %}
   {% else %}
-    <a class="im-btn secondary" href="{{ script_root }}/shipping/all/export.csv?preset={{ date_range.preset }}&start={{ date_range.start }}&end={{ date_range.end }}">Export CSV</a>
+    <a class="im-btn secondary" href="{{ script_root }}/shipping/all/export.xlsx?preset={{ date_range.preset }}&start={{ date_range.start }}&end={{ date_range.end }}">Export Excel</a><a class="im-btn secondary" href="{{ script_root }}/shipping/all/export.csv?preset={{ date_range.preset }}&start={{ date_range.start }}&end={{ date_range.end }}">Export CSV</a>
   {% endif %}
+  </div>
 </div>
 
 <form method="get" style="margin-top:22px" class="im-card">
