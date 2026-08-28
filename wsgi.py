@@ -14,7 +14,7 @@ import portal_auth
 from app import app as portal_app
 from inventory_management.app import app as inventory_app, init_db as _inventory_init_db, db_connect as _inventory_db_connect, clean as _inventory_clean, DATA_DIR as _inventory_data_dir
 from inventory_management.shipping_history import register_shipping_history
-from inventory_management.promethean_quality import register_quality_checker
+from inventory_management.promethean_quality_v2 import register_quality_checker
 
 
 class _PortalInventoryTemplateLoader(BaseLoader):
