@@ -1,0 +1,51 @@
+{% extends "base.html" %}
+{% block title %}Shipping History{% endblock %}
+{% block crumb %}Shipping History{% endblock %}
+{% block content %}
+<div style="display:flex;justify-content:space-between;gap:16px;align-items:flex-start;flex-wrap:wrap">
+  <div>
+    <h1 class="im-title">{% if report_kind=='model' %}Model Shipping History{% else %}All Shipping History{% endif %}</h1>
+    <p class="im-sub">Outbound shipments from the imported Shipping Export, filtered by shipped date.</p>
+  </div>
+  {% if report_kind=='model' %}
+    {% if model %}<a class="im-btn secondary" href="{{ script_root }}/shipping/model/export.csv?model={{ model|urlencode }}&preset={{ date_range.preset }}&start={{ date_range.start }}&end={{ date_range.end }}">Export CSV</a>{% endif %}
+  {% else %}
+    <a class="im-btn secondary" href="{{ script_root }}/shipping/all/export.csv?preset={{ date_range.preset }}&start={{ date_range.start }}&end={{ date_range.end }}">Export CSV</a>
+  {% endif %}
+</div>
+
+<form method="get" style="margin-top:22px" class="im-card">
+  <div style="display:grid;grid-template-columns:{% if report_kind=='model' %}minmax(220px,1.4fr) {% endif %}minmax(180px,1fr) minmax(145px,.8fr) minmax(145px,.8fr) auto;gap:10px;align-items:end">
+    {% if report_kind=='model' %}
+    <label style="display:grid;gap:6px"><span class="im-kpi-label">Model Number</span><input name="model" list="shipping-models" value="{{ model }}" placeholder="Enter exact model number" required><datalist id="shipping-models">{% for m in models %}<option value="{{ m }}">{% endfor %}</datalist></label>
+    {% endif %}
+    <label style="display:grid;gap:6px"><span class="im-kpi-label">Date Range</span><select name="preset" id="ship-preset">{% for key,label in preset_labels.items() %}<option value="{{ key }}" {% if date_range.preset==key %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></label>
+    <label style="display:grid;gap:6px"><span class="im-kpi-label">Start Date</span><input type="date" name="start" id="ship-start" value="{{ date_range.start }}"></label>
+    <label style="display:grid;gap:6px"><span class="im-kpi-label">End Date</span><input type="date" name="end" id="ship-end" value="{{ date_range.end }}"></label>
+    <button class="im-btn" type="submit">Run Report</button>
+  </div>
+</form>
+
+<div style="margin-top:14px;font:11px var(--font-mono);color:var(--text-muted)">{{ date_range.start_display }} → {{ date_range.end_display }}{% if report_kind=='model' and model %} · {{ model }}{% endif %}</div>
+
+<div class="im-grid" style="margin-top:14px">
+  <div class="im-card"><div class="im-kpi">{{ summary.shipments }}</div><div class="im-kpi-label">Shipments</div></div>
+  <div class="im-card"><div class="im-kpi">{{ summary.models }}</div><div class="im-kpi-label">Models</div></div>
+  <div class="im-card"><div class="im-kpi">{{ summary.serials }}</div><div class="im-kpi-label">Unique serials</div></div>
+  <div class="im-card"><div class="im-kpi">{{ summary.msos }}</div><div class="im-kpi-label">MSOs</div></div>
+</div>
+
+<div class="im-card" style="padding:0;overflow:auto;margin-top:18px">
+<table class="im-table"><thead><tr><th>Shipped</th><th>Model</th><th>Serial Number</th><th>MSO</th><th>Tracking</th><th>Sales Order</th><th>Pickup Date</th></tr></thead><tbody>
+{% for r in rows %}<tr>
+<td class="im-code">{{ r.event_at|event_date }}</td>
+<td class="im-code">{{ r.model_number or '—' }}</td>
+<td>{% if r.serial_number %}<a class="im-code" href="{{ script_root }}/serial/{{ r.serial_number|urlencode }}">{{ r.serial_number }}</a>{% else %}—{% endif %}</td>
+<td>{% if r.mso_number %}<a class="im-code" href="{{ script_root }}/mso/{{ r.mso_number|urlencode }}">{{ r.mso_number }}</a>{% else %}—{% endif %}</td>
+<td class="im-code">{{ r.details.tracking_number or '—' }}</td><td class="im-code">{{ r.details.sales_order_number or '—' }}</td><td class="im-code">{{ r.details.pickup_date or '—' }}</td>
+</tr>{% else %}<tr><td colspan="7" class="im-empty">{% if report_kind=='model' and not model %}Choose a model and run the report.{% else %}No shipments were found in this date range.{% endif %}</td></tr>{% endfor %}
+</tbody></table></div>
+<script>
+(function(){const p=document.getElementById('ship-preset'),s=document.getElementById('ship-start'),e=document.getElementById('ship-end');if(!p||!s||!e)return;function sync(){const custom=p.value==='custom';s.disabled=!custom;e.disabled=!custom;s.style.opacity=custom?'1':'.55';e.style.opacity=custom?'1':'.55';}p.addEventListener('change',sync);sync();})();
+</script>
+{% endblock %}
