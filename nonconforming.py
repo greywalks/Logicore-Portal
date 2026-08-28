@@ -59,6 +59,7 @@ def close_db(exception=None):
 
 def init_db():
     db = sqlite3.connect(DB_PATH)
+    db.row_factory = sqlite3.Row
     db.execute(
         """
         CREATE TABLE IF NOT EXISTS items (
