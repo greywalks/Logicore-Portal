@@ -12,7 +12,8 @@ from werkzeug.middleware.dispatcher import DispatcherMiddleware
 
 import portal_auth
 from app import app as portal_app
-from inventory_management.app import app as inventory_app, init_db as _inventory_init_db
+from inventory_management.app import app as inventory_app, init_db as _inventory_init_db, db_connect as _inventory_db_connect, clean as _inventory_clean
+from inventory_management.shipping_history import register_shipping_history
 
 
 class _PortalInventoryTemplateLoader(BaseLoader):
@@ -59,6 +60,7 @@ portal_auth.SECTIONS["tbd2"]["label"] = "Inventory Management"
 portal_app.jinja_loader = _PortalInventoryTemplateLoader(portal_app.jinja_loader)
 inventory_app.secret_key = portal_app.secret_key
 _inventory_init_db()
+register_shipping_history(inventory_app, _inventory_db_connect, _inventory_clean)
 
 # app.py already mounts Training Tracker. This outer dispatcher adds Inventory
 # Management without disturbing that existing mount.
