@@ -16,6 +16,7 @@ from inventory_management.app import app as inventory_app, init_db as _inventory
 from inventory_management.shipping_history import register_shipping_history
 from inventory_management.promethean_quality_v3 import register_quality_checker
 from inventory_management.excel_exports import register_excel_exports
+from inventory_management.quality_redirects import register_quality_redirects
 
 
 class _PortalInventoryTemplateLoader(BaseLoader):
@@ -57,6 +58,7 @@ _inventory_init_db()
 register_shipping_history(inventory_app, _inventory_db_connect, _inventory_clean)
 register_quality_checker(inventory_app, _inventory_db_connect, _inventory_clean, _inventory_data_dir)
 register_excel_exports(inventory_app, _inventory_db_connect, _inventory_clean, _inventory_data_dir)
+register_quality_redirects(inventory_app)
 
 portal_app.wsgi_app = DispatcherMiddleware(
     portal_app.wsgi_app,
