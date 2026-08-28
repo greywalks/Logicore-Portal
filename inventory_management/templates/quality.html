@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block title %}Promethean Data Quality{% endblock %}
+{% block crumb %}Data Quality{% endblock %}
+{% block content %}
+<div style="display:flex;gap:18px;align-items:flex-start;justify-content:space-between;flex-wrap:wrap">
+  <div>
+    <h1 class="im-title">Promethean Data Quality</h1>
+    <p class="im-sub">Decode supported Promethean serial numbers, validate recorded models, and check FedEx part numbers against the approved model/parts reference.</p>
+  </div>
+  {% if reference %}<span class="im-badge accent">Reference {{ reference.version }}</span>{% endif %}
+</div>
+
+{% if not reference %}
+<div class="im-card" style="margin-top:22px;border-color:rgba(245,158,11,.45)">
+  <div style="font-size:16px;font-weight:600;color:var(--text)">Reference data required</div>
+  <p class="im-sub">The checker code is installed, but the Promethean serial/parts reference is intentionally stored on the persistent disk rather than in GitHub. Upload the generated reference JSON once; it will remain at <span class="im-code">{{ reference_path }}</span>.</p>
+  <form method="post" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:16px">
+    <input type="file" name="reference" accept="application/json,.json" required>
+    <button class="im-btn" type="submit">Install reference</button>
+  </form>
+</div>
+{% else %}
+<div class="im-grid" style="margin-top:18px">
+  <div class="im-card"><div class="im-kpi">{{ reference.models }}</div><div class="im-kpi-label">Reference models</div></div>
+  <div class="im-card"><div class="im-kpi">{{ reference.parts }}</div><div class="im-kpi-label">Known part codes</div></div>
+  <div class="im-card"><div class="im-kpi" style="font-size:16px">Serial rules</div><div class="im-kpi-label">Installed</div></div>
+  <div class="im-card"><div class="im-kpi" style="font-size:16px">Persistent</div><div class="im-kpi-label">Reference storage</div></div>
+</div>
+
+<div class="im-card" style="margin-top:22px">
+  <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+    <div><h2 style="font-size:17px;color:var(--text);font-weight:600">Single-item checker</h2><p class="im-sub">Serial alone will decode a supported model. Add a recorded model and/or part number to validate it.</p></div>
+  </div>
+  <form method="get" action="{{ script_root }}/quality" style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr)) auto;gap:9px;margin-top:14px">
+    <input name="serial" value="{{ request.args.get('serial','') }}" placeholder="Serial number">
+    <input name="model" value="{{ request.args.get('model','') }}" placeholder="Recorded model (optional)">
+    <input name="part" value="{{ request.args.get('part','') }}" placeholder="Part number (optional)">
+    <button class="im-btn" type="submit">Check</button>
+  </form>
+  {% if manual %}
+  <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;margin-top:16px">
+    {% if manual.serial_only %}<div class="im-card"><div class="im-kpi-label">Decoded model</div><div style="font-size:19px;font-weight:650;color:var(--text);margin-top:6px">{{ manual.serial_only.model }}</div><div class="im-sub">{% if manual.serial_only.year %}Manufacture year {{ manual.serial_only.year }} ({{ manual.serial_only.year_code }}){% else %}Year code {{ manual.serial_only.year_code }}{% endif %}</div></div>{% endif %}
+    {% if manual.model %}<div class="im-card"><div class="im-kpi-label">Model check</div><div style="font-size:17px;font-weight:650;color:var(--text);margin-top:6px">{{ manual.model.status|replace('_',' ')|title }}</div><div class="im-sub">{{ manual.model.message }}</div>{% if manual.model.decoded %}<div class="im-code" style="margin-top:8px">Expected: {{ manual.model.decoded.model }}</div>{% endif %}</div>{% endif %}
+    {% if manual.part %}<div class="im-card"><div class="im-kpi-label">Part check</div><div style="font-size:17px;font-weight:650;color:var(--text);margin-top:6px">{{ manual.part.status|replace('_',' ')|title }}</div><div class="im-sub">{{ manual.part.message }}</div>{% if manual.part.parts_model %}<div class="im-code" style="margin-top:8px">Checked against: {{ manual.part.parts_model }}</div>{% endif %}{% if manual.part.status=='unknown_part' %}<div class="im-sub" style="margin-top:6px">Not found anywhere in the installed parts reference.</div>{% elif manual.part.known_on and manual.part.status!='ok' %}<div class="im-sub" style="margin-top:6px">Known for: {{ manual.part.known_on[:8]|join(', ') }}{% if manual.part.known_on|length > 8 %} +{{ manual.part.known_on|length - 8 }} more{% endif %}</div>{% endif %}</div>{% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<div class="im-card" style="margin-top:22px">
+  <div style="display:flex;justify-content:space-between;gap:14px;align-items:center;flex-wrap:wrap">
+    <div><h2 style="font-size:17px;color:var(--text);font-weight:600">Database audit</h2><p class="im-sub">Checks imported Receiving, Shipping, Inventory and Repair model records, plus unique FedEx source rows for reported/used part codes.</p></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><a class="im-btn" href="{{ script_root }}/quality?audit=1">Run audit</a>{% if audit %}<a class="im-btn secondary" href="{{ script_root }}/quality/export.csv">Export issues CSV</a>{% endif %}</div>
+  </div>
+</div>
+
+{% if audit %}
+<div class="im-grid" style="margin-top:14px">
+  <div class="im-card"><div class="im-kpi">{{ audit.model_checked }}</div><div class="im-kpi-label">Decodable model records</div></div>
+  <div class="im-card"><div class="im-kpi">{{ audit.model_issue_count }}</div><div class="im-kpi-label">Model issues</div></div>
+  <div class="im-card"><div class="im-kpi">{{ audit.part_checked }}</div><div class="im-kpi-label">FedEx parts checked</div></div>
+  <div class="im-card"><div class="im-kpi">{{ audit.part_issue_count }}</div><div class="im-kpi-label">Part issues</div></div>
+</div>
+<div class="im-card" style="margin-top:12px;padding:12px 16px"><span class="im-code">{{ audit.undecodable_records }}</span> model-bearing records used serial formats outside the documented decoder and were not treated as serial/model mismatches.</div>
+
+<div style="display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:28px;margin-bottom:10px;flex-wrap:wrap"><div><h2 style="font-size:17px;color:var(--text);font-weight:600">Model issues</h2><p class="im-sub">Serial/model disagreements and model values not recognized by the reference.</p></div><span class="im-badge">Showing up to 500</span></div>
+<div class="im-card" style="padding:0;overflow:auto"><table class="im-table"><thead><tr><th>Issue</th><th>Serial</th><th>Recorded</th><th>Expected</th><th>Source</th><th>Source file / row</th></tr></thead><tbody>{% for i in audit.model_issues[:500] %}<tr><td><span class="im-badge">{{ i.issue_type }}</span></td><td class="im-code"><a href="{{ script_root }}/serial/{{ i.serial_number }}">{{ i.serial_number }}</a></td><td class="im-code">{{ i.recorded_model }}</td><td class="im-code">{% if i.decoded %}{{ i.decoded.model }}{% else %}Not recognized{% endif %}</td><td>{{ i.source_type }}</td><td><div>{{ i.original_filename }}</div><div class="im-code">{{ i.source_row_key }}</div></td></tr>{% else %}<tr><td colspan="6" class="im-empty">No model issues found.</td></tr>{% endfor %}</tbody></table></div>
+
+<div style="display:flex;justify-content:space-between;align-items:end;gap:12px;margin-top:28px;margin-bottom:10px;flex-wrap:wrap"><div><h2 style="font-size:17px;color:var(--text);font-weight:600">Part issues</h2><p class="im-sub">Unknown Promethean part codes or known parts that are not listed for the serial-decoded model.</p></div><span class="im-badge">Showing up to 500</span></div>
+<div class="im-card" style="padding:0;overflow:auto"><table class="im-table"><thead><tr><th>Issue</th><th>MSO</th><th>Serial</th><th>Part</th><th>Decoded / compatible model</th><th>Field</th><th>Source file / row</th></tr></thead><tbody>{% for i in audit.part_issues[:500] %}<tr><td><span class="im-badge">{{ i.issue_type }}</span></td><td class="im-code">{% if i.mso_number %}<a href="{{ script_root }}/mso/{{ i.mso_number }}">{{ i.mso_number }}</a>{% endif %}</td><td class="im-code">{% if i.serial_number %}<a href="{{ script_root }}/serial/{{ i.serial_number }}">{{ i.serial_number }}</a>{% else %}{{ i.serial }}{% endif %}</td><td class="im-code">{{ i.part }}</td><td class="im-code">{{ i.parts_model or i.compatibility_model or 'Undetermined' }}</td><td>{{ i.part_field }}</td><td><div>{{ i.original_filename }}</div><div class="im-code">{{ i.source_row_key }}</div></td></tr>{% else %}<tr><td colspan="7" class="im-empty">No part issues found.</td></tr>{% endfor %}</tbody></table></div>
+{% endif %}
+
+<div class="im-card" style="margin-top:24px"><div class="im-kpi-label">Reference maintenance</div><p class="im-sub">To replace the Promethean reference later, upload a newer generated JSON. The existing file is replaced atomically on the persistent disk; GitHub does not contain the internal model/parts data.</p><form method="post" enctype="multipart/form-data" style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px"><input type="file" name="reference" accept="application/json,.json" required><button class="im-btn secondary" type="submit">Replace reference</button></form></div>
+{% endif %}
+<style>@media(max-width:900px){form[action$="/quality"]{grid-template-columns:1fr!important}.im-card>div[style*="grid-template-columns:repeat(2"]{grid-template-columns:1fr!important}}</style>
+{% endblock %}
