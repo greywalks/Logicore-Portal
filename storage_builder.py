@@ -157,7 +157,7 @@ def analyze_fedex(fedex_path, period_start, period_end,
     Returns a dict with:
       - programming_df:   per-row detail (MSO, dates, part #, type, qty, fees)
       - part_type_totals: {part_type: total_quantity} for Breakdown line items
-      - small_part_picks: unique MSO count in the period
+      - small_part_picks: sum of normalized Quantity values in the period
     """
     fedex = pd.read_excel(fedex_path)
     fedex["Request Date"] = pd.to_datetime(fedex["Request Date"], errors="coerce")
@@ -165,11 +165,19 @@ def analyze_fedex(fedex_path, period_start, period_end,
         (fedex["Request Date"] >= pd.Timestamp(period_start)) &
         (fedex["Request Date"] <= pd.Timestamp(period_end))
     ].copy()
-    fedex_period["Quantity"] = fedex_period["Quantity"].fillna(1)
-    fedex_period.loc[fedex_period["Quantity"] == 0, "Quantity"] = 1
+    quantity = pd.to_numeric(fedex_period["Quantity"], errors="coerce").fillna(1)
+    quantity = quantity.mask(quantity <= 0, 1)
+    fractional = quantity[quantity.mod(1) != 0]
+    if len(fractional):
+        source_rows = ", ".join(str(int(i) + 2) for i in fractional.index[:10])
+        raise ValueError(
+            "FedEx Quantity must contain whole numbers; fractional value(s) "
+            f"found on source row(s): {source_rows}")
+    fedex_period["Quantity"] = quantity.astype(int)
 
-    small_part_picks = fedex_period["MSO"].dropna().nunique()
-    log(f"Small Part Picks: {small_part_picks} unique MSO orders")
+    small_part_picks = int(fedex_period["Quantity"].sum())
+    unique_msos = fedex_period["MSO"].dropna().nunique()
+    log(f"Small Part Picks: {small_part_picks} total part(s) across {unique_msos} MSO order(s)")
 
     # ALL FedEx rows in period go into Part Testing — unknown types get price 0
     fedex_period["_part_type"] = fedex_period["Part/Component Reported Product Code"].apply(classify_part_type)
@@ -415,12 +423,11 @@ def build_storage_invoice(
     output_path: Path = None,
     log=print,
 ):
-    part_prices, line_prices = load_prices()
+    _, line_prices = load_prices()
 
     unit_storage_df  = analysis["unit_storage_df"]
     units_received   = analysis["units_received"].copy()
     programming_df   = analysis["programming_df"]
-    part_type_totals = analysis["part_type_totals"]
     ship_month       = analysis["ship_month"]
     unit_picks_count = analysis["unit_picks_count"]
     small_part_picks = analysis["small_part_picks"]
@@ -453,7 +460,7 @@ def build_storage_invoice(
     _build_breakdown(wb, invoice_date, completed_date, call_id, customer,
                      unit_storage_df, pallet_count, units_received,
                      small_parts_df, unit_picks_count, small_part_picks,
-                     part_type_totals, line_prices, part_prices)
+                     line_prices)
     _build_unit_storage(wb, unit_storage_df, line_prices)
     _build_unit_receiving(wb, units_received, line_prices)
     _build_units_shipped(wb, ship_month, line_prices)
@@ -475,8 +482,7 @@ def build_storage_invoice(
         line_prices["unit_receipt"]    * len(units_received) +
         small_parts_total +
         line_prices["unit_pick"]       * unit_picks_count +
-        line_prices["small_part_pick"] * small_part_picks +
-        sum(qty * part_prices.get(pt, 0) for pt, qty in part_type_totals.items())
+        line_prices["small_part_pick"] * small_part_picks
     )
     tax   = round(subtotal * TAX_RATE, 2)
     total = round(subtotal + tax, 2)
@@ -574,7 +580,7 @@ def _line(ws, row, label, uom, price, qty_val, qty_formula=None, total_override=
 def _build_breakdown(wb, invoice_date, completed_date, call_id, customer,
                      unit_storage_df, pallet_count, units_received,
                      small_parts_df, unit_picks_count, small_part_picks,
-                     part_type_totals, line_prices, part_prices):
+                     line_prices):
     ws = wb["Breakdown"]
     ws.merged_cells.ranges.clear()
     ws.delete_rows(1, ws.max_row)
@@ -643,27 +649,10 @@ def _build_breakdown(wb, invoice_date, completed_date, call_id, customer,
           total_override="=SUMIF('Small Parts Check In'!D:D,\">0\",'Small Parts Check In'!D:D)")
     _line(ws, 16, "Unit Picks",      "Each",  line_prices["unit_pick"],
           unit_picks_count,       qty_formula="=COUNTA('Units Shipped'!B:B)-1")
-    _line(ws, 17, "Small Part Picks","Order", line_prices["small_part_pick"],
-          small_part_picks)
-
-    # ── Parts Testing & Configuration ─────────────────────────────────────────
-    section_hdr(19, "Parts Testing & Configuration")
-    testing_lines = [
-        (20, "PSU - Testing",                               "Each", "PSU"),
-        (21, "Mainboard Configure for Dispatch - Testing",  "Each", "Mainboard Configure for Dispatch"),
-        (22, "Mainboard - Testing",                         "Each", "Mainboard"),
-        (23, "AC-PCA - Testing",                            "Each", "AC-PCA"),
-        (24, "Keypad - Testing",                            "Each", "Keypad"),
-        (25, "Maintouch - Testing",                         "Each", "Maintouch"),
-        (26, "Ext-Input - Testing",                         "Each", "EXT-INPUT"),
-        (27, "OPS-PCA - Testing",                           "Each", "OPS-PCA"),
-        (28, "USB - Testing",                               "Each", "USB"),
-        (29, "Speaker Testing",                             "Each", "SPEAKER"),
-    ]
-    for row, label, uom, ptype in testing_lines:
-        qty   = part_type_totals.get(ptype, 0)
-        price = part_prices.get(ptype, 0)
-        _line(ws, row, label, uom, price, qty)   # total = =D{row}*C{row}
+    # Small Part Picks bill by summed Quantity on the retained FedEx detail sheet.
+    _line(ws, 17, "Small Part Picks", "Each", line_prices["small_part_pick"],
+          small_part_picks,
+          qty_formula="=SUM('Part Testing & Programming'!G:G)")
 
     # ── Totals ────────────────────────────────────────────────────────────────
     ws["D31"].value = "Subtotal"; ws["D31"].font = _tf(bold=True)

@@ -22,6 +22,26 @@ OUTPUT_DIR    = Path(__file__).parent / "outputs"
 UPLOAD_DIR.mkdir(exist_ok=True)
 OUTPUT_DIR.mkdir(exist_ok=True)
 
+# Generated files are authorized by the invoice subsection that created them.
+# This mirrors the application's existing process-local output/session model.
+_OUTPUT_ACCESS = {}
+_OUTPUT_ACCESS_LOCK = threading.Lock()
+
+
+def _register_output(path_or_name, subsection):
+    """Register one generated filename to the client subsection that owns it."""
+    if not path_or_name or not subsection:
+        return
+    filename = Path(path_or_name).name
+    with _OUTPUT_ACCESS_LOCK:
+        _OUTPUT_ACCESS[filename] = subsection
+
+
+def _registered_output_subsection(filename):
+    with _OUTPUT_ACCESS_LOCK:
+        return _OUTPUT_ACCESS.get(Path(filename).name)
+
+
 sys.path.insert(0, str(Path(__file__).parent))
 
 # ── Training Tracker mount ──────────────────────────────────────────────────
@@ -89,29 +109,19 @@ ROUTE_SECTIONS = {
     "sanitize_route": ("invoice-generator", "promethean"),
     "generate": ("invoice-generator", "promethean"),
     "stream": ("invoice-generator", "promethean"),
-    "download": ("invoice-generator", "promethean"),
     # Promethean — Storage Invoice
     "analyze_storage_route": ("invoice-generator", "promethean"),
     "confirm_storage": ("invoice-generator", "promethean"),
     "stream_storage": ("invoice-generator", "promethean"),
-    "get_storage_prices": ("invoice-generator", "promethean"),
-    "set_storage_prices": ("invoice-generator", "promethean"),
     # Promethean — FedEx Shipment Upload
     "analyze_fedex_shipment_route": ("invoice-generator", "promethean"),
     "build_fedex_shipment": ("invoice-generator", "promethean"),
     "stream_fedex_shipment": ("invoice-generator", "promethean"),
-    "get_fedex_shipment_defaults": ("invoice-generator", "promethean"),
-    "set_fedex_shipment_defaults": ("invoice-generator", "promethean"),
     # Philips
     "analyze_philips_route": ("invoice-generator", "philips"),
     "confirm_philips": ("invoice-generator", "philips"),
     "stream_philips": ("invoice-generator", "philips"),
     "generate_report_and_analyze": ("invoice-generator", "philips"),
-    "get_philips_dimensions": ("invoice-generator", "philips"),
-    "upload_philips_dimensions": ("invoice-generator", "philips"),
-    "download_philips_dimensions": ("invoice-generator", "philips"),
-    "get_philips_repair_cost": ("invoice-generator", "philips"),
-    "set_philips_repair_cost": ("invoice-generator", "philips"),
     # TCL
     "analyze_tcl_route": ("invoice-generator", "tcl"),
     "confirm_tcl": ("invoice-generator", "tcl"),
@@ -120,14 +130,23 @@ ROUTE_SECTIONS = {
     "analyze_amc_route": ("invoice-generator", "amc"),
     "confirm_amc": ("invoice-generator", "amc"),
     "stream_amc": ("invoice-generator", "amc"),
-    "get_amc_dimensions": ("invoice-generator", "amc"),
-    "upload_amc_dimensions": ("invoice-generator", "amc"),
-    "download_amc_dimensions": ("invoice-generator", "amc"),
-    "get_amc_prices": ("invoice-generator", "amc"),
-    "set_amc_prices": ("invoice-generator", "amc"),
-    # Config
+    # Config — all pricing/reference administration is gated here.
     "get_serial_rules": ("invoice-generator", "config"),
     "save_serial_rules": ("invoice-generator", "config"),
+    "get_storage_prices": ("invoice-generator", "config"),
+    "set_storage_prices": ("invoice-generator", "config"),
+    "get_fedex_shipment_defaults": ("invoice-generator", "config"),
+    "set_fedex_shipment_defaults": ("invoice-generator", "config"),
+    "get_philips_dimensions": ("invoice-generator", "config"),
+    "upload_philips_dimensions": ("invoice-generator", "config"),
+    "download_philips_dimensions": ("invoice-generator", "config"),
+    "get_philips_repair_cost": ("invoice-generator", "config"),
+    "set_philips_repair_cost": ("invoice-generator", "config"),
+    "get_amc_dimensions": ("invoice-generator", "config"),
+    "upload_amc_dimensions": ("invoice-generator", "config"),
+    "download_amc_dimensions": ("invoice-generator", "config"),
+    "get_amc_prices": ("invoice-generator", "config"),
+    "set_amc_prices": ("invoice-generator", "config"),
     # SMS NonConforming
     "nc_list_items": ("sms-nonconforming", None),
     "nc_create_item": ("sms-nonconforming", None),
@@ -329,47 +348,53 @@ def _sid() -> str:
 
 
 class SessionStore:
-    """Per-module, per-browser-session storage: an analysis dict plus an SSE
-    log queue, keyed by session id instead of shared globally. One instance
-    per invoice module (Workshop, Storage, Philips, TCL, AMC)."""
+    """Per-module, per-browser-session analysis state and SSE queue."""
 
-    def __init__(self):
-        self._data:   dict[str, dict] = {}
+    def __init__(self, output_subsection=None):
+        self._data: dict[str, dict] = {}
         self._queues: dict[str, "queue.Queue"] = {}
+        self.output_subsection = output_subsection
+
+    def _make_queue(self):
+        q = queue.Queue()
+        q.output_subsection = self.output_subsection
+        return q
 
     def get(self, sid: str) -> dict:
         """The session's analysis dict — created empty on first access."""
         return self._data.setdefault(sid, {})
 
     def replace(self, sid: str, data: dict) -> dict:
-        """Overwrite the session's analysis dict wholesale (mirrors the old
-        `global _session; _session = {...}` pattern)."""
+        """Overwrite the session's analysis dict wholesale."""
         self._data[sid] = data
         return data
 
     def new_queue(self, sid: str) -> queue.Queue:
-        """Start a fresh SSE queue for this session (call at the top of the
-        confirm/generate step, before spawning the background thread)."""
-        q = queue.Queue()
+        """Start a fresh SSE queue for this session."""
+        q = self._make_queue()
         self._queues[sid] = q
         return q
 
     def queue(self, sid: str) -> queue.Queue:
-        """Fetch this session's current queue for the /stream endpoint. If a
-        client opens /stream before /generate has run (or after a restart),
-        hand back a fresh empty queue rather than raising — it will just sit
-        there emitting pings until the real one is created."""
-        return self._queues.setdefault(sid, queue.Queue())
+        """Fetch or create this session's current SSE queue."""
+        if sid not in self._queues:
+            self._queues[sid] = self._make_queue()
+        return self._queues[sid]
 
     @staticmethod
     def make_logger(q: "queue.Queue"):
-        """Bind a (log, done) callable pair to one specific queue, so
-        background-thread code logs to the browser session that kicked it
-        off instead of a shared/ambiguous global."""
+        """Bind log/done callbacks to one browser session's queue."""
         def log(msg: str):
             q.put({"type": "log", "msg": msg})
+
         def done(success: bool, payload: dict):
+            subsection = getattr(q, "output_subsection", None)
+            if success and subsection:
+                for key, value in payload.items():
+                    if value and (key == "filename" or key.endswith("_filename")):
+                        _register_output(value, subsection)
             q.put({"type": "done", "success": success, **payload})
+
         return log, done
 
 
@@ -467,7 +492,7 @@ TAX_RATE = 0.07
 # ── Per-session state + SSE log queue ──────────────────────────────────────────
 # Holds sanitizer output between /sanitize and /generate calls, keyed per browser
 # session (see SessionStore above) rather than one dict shared by every user.
-_workshop = SessionStore()
+_workshop = SessionStore("promethean")
 
 
 def _cnt(df, type2, size, prev_triaged=None):
@@ -477,13 +502,45 @@ def _cnt(df, type2, size, prev_triaged=None):
     return int(m.sum())
 
 
+def _rebuild_workshop_clean_df(raw_df, corrections=None, issue_indices=None):
+    """Apply review decisions to complete source rows, then rebuild billing rows."""
+    from sanitizer import apply_corrections, BILLABLE_SIZES
+
+    corrections = corrections or {}
+    issue_indices = {int(i) for i in (issue_indices or [])}
+    working_df = apply_corrections(raw_df.copy(), corrections)
+
+    resolved_indices = set()
+    for idx, correction in corrections.items():
+        if correction == "EXCLUDE":
+            resolved_indices.add(int(idx))
+        elif isinstance(correction, dict):
+            if correction.get("value") not in (None, ""):
+                resolved_indices.add(int(idx))
+        elif correction not in (None, ""):
+            resolved_indices.add(int(idx))
+
+    unresolved_indices = issue_indices - resolved_indices
+    if unresolved_indices:
+        working_df = working_df[~working_df.index.isin(unresolved_indices)].copy()
+
+    clean_df = working_df.copy()
+    if "_exclude" in clean_df.columns:
+        clean_df = clean_df[~clean_df["_exclude"].fillna(False)].copy()
+
+    clean_df = clean_df[clean_df["_size"].isin(BILLABLE_SIZES)].copy()
+    clean_df["Type"] = clean_df["_Type"]
+    clean_df["Type2"] = clean_df["_Type2"]
+    clean_df["Actual Model"] = clean_df["_clean_model"]
+    clean_df = clean_df[clean_df["Type"].isin(("Depot Repair Tab", "Triage Tab"))].copy()
+    return clean_df, working_df
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # Duplicate filtering (shared by both flows)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def apply_dedup(repair_df, prev_path, shipping_path, log=print, billing_start=None):
-    from sanitizer import BILLABLE_SIZES
-
     prev_repair = pd.read_excel(prev_path, sheet_name="Repair Log")
     prev_triage = pd.read_excel(prev_path, sheet_name="Triage Log")
     shipping    = pd.read_csv(shipping_path)
@@ -540,6 +597,34 @@ def apply_dedup(repair_df, prev_path, shipping_path, log=print, billing_start=No
     depot  = df[df["Type"] == "Depot Repair Tab"].copy()
     triage = df[df["Type"] == "Triage Tab"].copy()
 
+    excluded_rows = []
+    for _, row in df[df["is_duplicate"]].iterrows():
+        serial = row.get("Actual Serial", "")
+        prev_date = row.get("prev_invoice_date")
+        last_ship = ship_lookup.get(serial, pd.NaT)
+        prev_label = (pd.Timestamp(prev_date).strftime("%Y-%m-%d")
+                      if pd.notna(prev_date) else "an unknown date")
+        if pd.isna(last_ship):
+            reason = (f"Previously invoiced on {prev_label}; no later shipment "
+                      "was found, so the serial was not billed again.")
+        else:
+            ship_label = pd.Timestamp(last_ship).strftime("%Y-%m-%d")
+            reason = (f"Previously invoiced on {prev_label}; last shipped on "
+                      f"{ship_label}, which was not after the prior invoice.")
+        excluded_rows.append({
+            "Model": row.get("Actual Model", ""),
+            "Serial": serial,
+            "Source Tab": ("Depot Repair" if row.get("Type") == "Depot Repair Tab"
+                           else "Triage Units"),
+            "Category": row.get("Category", ""),
+            "Result": row.get("Result", ""),
+            "Original Date": row.get("Date Integer", ""),
+            "Reason": reason,
+        })
+    excluded_df = pd.DataFrame(excluded_rows, columns=[
+        "Model", "Serial", "Source Tab", "Category", "Result", "Original Date", "Reason"
+    ])
+
     log(f"Excluded as duplicates — Depot: {int(depot['is_duplicate'].sum())}, "
         f"Triage: {int(triage['is_duplicate'].sum())}")
 
@@ -558,7 +643,7 @@ def apply_dedup(repair_df, prev_path, shipping_path, log=print, billing_start=No
         lambda r: PRICES.get((r["Type"], r["Type2"], r["Size"], False), 0), axis=1)
 
     log(f"Final rows — Depot: {len(depot_clean)}, Triage: {len(triage_clean)}")
-    return depot_clean, triage_clean
+    return depot_clean, triage_clean, excluded_df
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -583,10 +668,11 @@ def process_legacy(repair_path, prev_path, shipping_path,
         repair["Size"] = repair["Derive Size"].apply(
             lambda x: "Large" if str(x).strip() == "86" else "Small")
 
-        depot_clean, triage_clean = apply_dedup(repair, prev_path, shipping_path, log, billing_start=date_from)
+        depot_clean, triage_clean, excluded_df = apply_dedup(
+            repair, prev_path, shipping_path, log, billing_start=date_from)
         _finish(depot_clean, triage_clean, output_path,
                 invoice_date, completed_date, call_id, customer,
-                log=log, done=done)
+                excluded_df=excluded_df, log=log, done=done)
     except Exception as e:
         import traceback
         log(f"Error: {e}")
@@ -601,7 +687,7 @@ def _finish(depot_clean, triage_clean, output_path,
             invoice_date, completed_date, call_id, customer,
             corrected_filename=None, master_filename=None,
             programming_df=None, part_prices=None, part_type_totals=None,
-            log=print, done=None):
+            excluded_df=None, log=print, done=None):
     from builder import build, TEMPLATE_FILE as TPL
     if not TPL.exists():
         raise FileNotFoundError(f"Template not found: {TPL}")
@@ -613,6 +699,7 @@ def _finish(depot_clean, triage_clean, output_path,
         invoice_date=invoice_date, completed_date=completed_date,
         call_id=call_id, customer=customer,
         programming_df=programming_df, part_prices=part_prices,
+        excluded_df=excluded_df,
     )
 
     subtotal = sum(
@@ -815,6 +902,7 @@ def sanitize_route():
             "fedex_path":   str(fedex_path) if fedex_path else None,
             "clean_df":     clean_df,
             "raw_df":       raw_df,
+            "issue_indices": [int(iss["row_index"]) for iss in issues],
             "date_from":    date_from,
             "date_to":      date_to,
             "call_id":      request.form.get("call_id", "C1413671"),
@@ -927,29 +1015,18 @@ def generate():
 
 def _run_raw_generate(sess, corrections, output_path, corrected_path, log, done):
     try:
-        from sanitizer import apply_corrections, export_corrected_workbook, BILLABLE_SIZES
+        from sanitizer import export_corrected_workbook
 
-        clean_df = sess["clean_df"].copy()
-        raw_df   = sess["raw_df"].copy()
-
-        # Apply user corrections to the clean_df
         if corrections:
             log(f"Applying {len(corrections)} correction(s)…")
-            clean_df = apply_corrections(clean_df, corrections)
-            raw_df   = apply_corrections(raw_df,   corrections)
-
-        # Drop excluded rows
-        if '_exclude' in clean_df.columns:
-            clean_df = clean_df[~clean_df['_exclude'].fillna(False)].copy()
-
-        # Re-filter to billable sizes after corrections
-        clean_df = clean_df[clean_df['_size'].isin(BILLABLE_SIZES)].copy()
+        clean_df, raw_df = _rebuild_workshop_clean_df(
+            sess["raw_df"], corrections, sess.get("issue_indices", []))
 
         log(f"Records after corrections: {len(clean_df)}")
 
         # Dedup against previously invoiced
         # Pass billing_start so master entries from the current period are excluded
-        depot_clean, triage_clean = apply_dedup(
+        depot_clean, triage_clean, excluded_df = apply_dedup(
             clean_df, sess["prev_path"], sess["ship_path"], log,
             billing_start=sess["date_from"])
 
@@ -1004,6 +1081,7 @@ def _run_raw_generate(sess, corrections, output_path, corrected_path, log, done)
                 programming_df=programming_df,
                 part_prices=part_prices,
                 part_type_totals=part_type_totals,
+                excluded_df=excluded_df,
                 log=log, done=done)
 
     except Exception as e:
@@ -1030,7 +1108,18 @@ def stream():
 
 @app.route("/download/<path:filename>")
 def download(filename):
-    path = OUTPUT_DIR / filename
+    subsection = _registered_output_subsection(filename)
+    if subsection is None:
+        return "File not found", 404
+
+    user = portal_auth.get_current_user()
+    if not portal_auth.has_access(user, "invoice-generator", subsection):
+        flash("You don't have permission to download that output.", "error")
+        return redirect(url_for("index"))
+
+    path = (OUTPUT_DIR / filename).resolve()
+    if path.parent != OUTPUT_DIR.resolve():
+        return "File not found", 404
     if not path.exists():
         return "File not found", 404
     return send_file(path, as_attachment=True, download_name=path.name,
@@ -1064,7 +1153,7 @@ def save_serial_rules():
 # Storage & Small Parts Invoice — routes
 # ══════════════════════════════════════════════════════════════════════════════
 
-_storage = SessionStore()   # in-memory analysis result between analyze→confirm, per browser session
+_storage = SessionStore("promethean")   # in-memory analysis result between analyze→confirm, per browser session
 
 
 # ── Step 1: Analyze (upload files, process, return review lists) ──────────────
@@ -1226,7 +1315,7 @@ def set_storage_prices():
 # Philips Warehouse & Repair Invoice — routes
 # ══════════════════════════════════════════════════════════════════════════════
 
-_philips = SessionStore()   # holds analysis + upload path between analyze→confirm, per browser session
+_philips = SessionStore("philips")   # holds analysis + upload path between analyze→confirm, per browser session
 
 
 def _philips_summary_payload(analysis):
@@ -1374,6 +1463,7 @@ def generate_report_and_analyze():
         report_name = f"{report_fname}.xlsx" if report_fname else f"TPV_Philips_MonthEndReport_{ts}.xlsx"
         report_path = OUTPUT_DIR / report_name
         build_month_end_report(report_analysis, report_path, log=logs.append)
+        _register_output(report_path, "philips")
 
         invoice_analysis = analyze_philips(report_path, parts_sqft_manual=parts_sqft, log=logs.append)
 
@@ -1458,7 +1548,7 @@ def set_philips_repair_cost():
 # TCL (TTE Technology) Warehouse Invoice — routes
 # ══════════════════════════════════════════════════════════════════════════════
 
-_tcl = SessionStore()   # in-memory analysis result between analyze -> confirm, per browser session
+_tcl = SessionStore("tcl")   # in-memory analysis result between analyze -> confirm, per browser session
 
 
 # ── Step 1: Analyze (upload inventory file, split units/parts, return groups) ─
@@ -1598,7 +1688,7 @@ def stream_tcl():
 # AMC Warehouse Invoice — routes
 # ══════════════════════════════════════════════════════════════════════════════
 
-_amc = SessionStore()   # holds analysis + upload paths between analyze→confirm, per browser session
+_amc = SessionStore("amc")   # holds analysis + upload paths between analyze→confirm, per browser session
 
 
 def _amc_summary_payload(analysis):
@@ -1788,7 +1878,7 @@ def set_amc_prices():
 # file is written, so a bad upload (wrong file, no billable rows) surfaces
 # before anything lands in outputs/.
 # ══════════════════════════════════════════════════════════════════════════════
-_fedex_shipment = SessionStore()   # holds the built rows between analyze→build, per browser session
+_fedex_shipment = SessionStore("promethean")   # holds the built rows between analyze→build, per browser session
 
 
 @app.route("/analyze_fedex_shipment", methods=["POST"])
