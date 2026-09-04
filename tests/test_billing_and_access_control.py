@@ -259,7 +259,8 @@ def test_finish_passes_excluded_dataframe_to_builder(tmp_path, monkeypatch):
     assert done_payload["success"] is True
 
 
-def test_session_store_registers_output_module():
+def test_session_store_registers_output_module(tmp_path, monkeypatch):
+    monkeypatch.setattr(portal_app, "OUTPUT_DIR", tmp_path)
     portal_app._OUTPUT_ACCESS.clear()
     store = portal_app.SessionStore("amc")
     q = store.new_queue("session")
@@ -275,6 +276,9 @@ def test_download_authorization_uses_registered_module(tmp_path, monkeypatch):
     monkeypatch.setattr(portal_app, "OUTPUT_DIR", tmp_path)
     portal_app._OUTPUT_ACCESS.clear()
     portal_app._register_output(output, "amc")
+    # Simulate the download being served by a different Gunicorn worker, whose
+    # process-local cache did not handle the generation request.
+    portal_app._OUTPUT_ACCESS.clear()
 
     monkeypatch.setattr(
         portal_app.portal_auth,
