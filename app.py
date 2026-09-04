@@ -2,7 +2,7 @@
 Promethean Workshop Invoice Generator — Flask Backend
 """
 
-import os, sys, shutil, queue, threading, json, uuid, webbrowser, io
+import os, sys, shutil, queue, threading, json, uuid, webbrowser, io, hashlib
 from pathlib import Path
 from datetime import datetime
 
@@ -29,17 +29,45 @@ _OUTPUT_ACCESS_LOCK = threading.Lock()
 
 
 def _register_output(path_or_name, subsection):
-    """Register one generated filename to the client subsection that owns it."""
+    """Register one generated filename to the client subsection that owns it.
+
+    Gunicorn runs more than one worker in production, so the in-memory cache is
+    only a fast path.  A tiny marker in the shared output directory lets a
+    download request handled by a different worker recover the same ownership
+    information without weakening subsection-level authorization.
+    """
     if not path_or_name or not subsection:
         return
     filename = Path(path_or_name).name
     with _OUTPUT_ACCESS_LOCK:
         _OUTPUT_ACCESS[filename] = subsection
+    access_dir = OUTPUT_DIR / ".access"
+    access_dir.mkdir(exist_ok=True)
+    marker = access_dir / f"{hashlib.sha256(filename.encode('utf-8')).hexdigest()}.json"
+    temp_marker = access_dir / f".{marker.name}.{uuid.uuid4().hex}.tmp"
+    temp_marker.write_text(json.dumps({"filename": filename, "subsection": subsection}))
+    os.replace(temp_marker, marker)
 
 
 def _registered_output_subsection(filename):
+    filename = Path(filename).name
     with _OUTPUT_ACCESS_LOCK:
-        return _OUTPUT_ACCESS.get(Path(filename).name)
+        subsection = _OUTPUT_ACCESS.get(filename)
+    if subsection:
+        return subsection
+
+    marker = OUTPUT_DIR / ".access" / f"{hashlib.sha256(filename.encode('utf-8')).hexdigest()}.json"
+    try:
+        data = json.loads(marker.read_text())
+    except (OSError, ValueError, TypeError):
+        return None
+    if data.get("filename") != filename or not data.get("subsection"):
+        return None
+
+    subsection = data["subsection"]
+    with _OUTPUT_ACCESS_LOCK:
+        _OUTPUT_ACCESS[filename] = subsection
+    return subsection
 
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -2102,5 +2130,4 @@ if __name__ == "__main__":
     threading.Timer(1.2, lambda: webbrowser.open(url)).start()
     print(f"\n  Logicore Portal running → {url}\n  Press Ctrl+C to stop.\n")
     app.run(debug=False, port=5000)
-
 

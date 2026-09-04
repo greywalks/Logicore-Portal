@@ -268,11 +268,15 @@ def analyze_philips(report_path, parts_sqft_manual=0, dims=None, tiers=None, log
     log(f"Loaded Month End Report — Inventory: {len(inv)}, Shipping: {len(ship)}, "
         f"Recieved: {len(recv)}, Repairs: {len(rep)}")
 
-    # ── Square footage: Inventory (already has Size) + Shipping (needs lookup) ──
+    # ── Square footage: derive from the model reference wherever needed ───────
     excluded_rows = []   # collected across all three checks -> written to an output tab
 
     inv = inv.dropna(subset=["Type"]).copy()
-    inv["_sqft"] = inv["Size"]
+    if "Size" in inv.columns:
+        inv["_sqft"] = pd.to_numeric(inv["Size"], errors="coerce")
+    else:
+        inv["_sqft"] = float("nan")
+        log("Inventory has no Size column — deriving box square footage from Model using the Dimensions reference")
     blank_size = inv["_sqft"].isna()
     if blank_size.any():
         inv.loc[blank_size, "_sqft"] = inv.loc[blank_size, "Model"].apply(
